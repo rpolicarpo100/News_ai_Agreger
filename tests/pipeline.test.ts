@@ -377,3 +377,108 @@ test('classifier matches whole words only (no substring misfires)', () => {
   assert.equal(classify('ESA launches new satellite into orbit', null).category, 'space');
   assert.equal(classify('Uma mesa foi vendida num leilão', null).category, 'unclassified');
 });
+
+// ---------------------------------------------------------------- admin auth
+const { sessionValid, issueSession, verifyAdminToken, csrfToken, parseCookies } = await import('../src/api/session.js');
+const { isLocked, recordFailure, recordSuccess, _reset } = await import('../src/api/loginguard.js');
+
+function fakeRes() {
+  const headers: string[] = [];
+  return { headers, append(_k: string, v: string) { headers.push(v); } } as any;
+}
+function reqWithCookies(setCookies: string[]) {
+  const cookie = setCookies.map((c) => c.split(';')[0]).join('; ');
+  return { headers: { cookie } } as any;
+}
+
+test('admin session is rejected when ADMIN_TOKEN is unset (secure by default)', () => {
+  delete process.env.ADMIN_TOKEN;
+  const res = fakeRes();
+  issueSession(res);
+  assert.equal(res.headers.length, 0, 'no session cookie may be issued without a configured token');
+  assert.equal(sessionValid({ headers: { cookie: 'gni_admin=abc.def' } } as any), false);
+});
+
+test('valid admin session round-trips; tampering is rejected', () => {
+  process.env.ADMIN_TOKEN = 'test-token-abcdef123456';
+  const res = fakeRes();
+  issueSession(res);
+  const req = reqWithCookies(res.headers);
+  assert.equal(sessionValid(req), true);
+  assert.match(csrfToken(req), /^[0-9a-f]{48}$/);
+
+  // Flipping a character in the signature must invalidate the session.
+  const raw = parseCookies(req).gni_admin;
+  const [b64, sig] = raw.split('.');
+  const tampered = `${b64}.${sig.slice(0, -1)}${sig.endsWith('a') ? 'b' : 'a'}`;
+  assert.equal(sessionValid({ headers: { cookie: `gni_admin=${tampered}` } } as any), false);
+});
+
+test('rotating ADMIN_TOKEN invalidates existing sessions', () => {
+  process.env.ADMIN_TOKEN = 'first-token-000000';
+  const res = fakeRes();
+  issueSession(res);
+  const req = reqWithCookies(res.headers);
+  assert.equal(sessionValid(req), true);
+  process.env.ADMIN_TOKEN = 'rotated-token-111111';
+  assert.equal(sessionValid(req), false);
+});
+
+test('expired sessions are rejected', async () => {
+  process.env.ADMIN_TOKEN = 'test-token-abcdef123456';
+  process.env.ADMIN_SESSION_HOURS = '-1'; // already expired
+  // Re-import is not possible mid-run, so build the cookie the same way with a past expiry.
+  const { createHmac } = await import('node:crypto');
+  const past = Date.now() - 1000;
+  const sig = createHmac('sha256', process.env.ADMIN_TOKEN!).update(`session|${past}`).digest('hex');
+  const value = `${Buffer.from(String(past)).toString('base64url')}.${sig}`;
+  assert.equal(sessionValid({ headers: { cookie: `gni_admin=${value}` } } as any), false);
+  delete process.env.ADMIN_SESSION_HOURS;
+});
+
+test('admin token comparison rejects wrong and empty tokens', () => {
+  process.env.ADMIN_TOKEN = 'correct-horse-battery-staple';
+  assert.equal(verifyAdminToken('correct-horse-battery-staple'), true);
+  assert.equal(verifyAdminToken('wrong'), false);
+  assert.equal(verifyAdminToken(''), false);
+  delete process.env.ADMIN_TOKEN;
+  assert.equal(verifyAdminToken('anything'), false);
+});
+
+test('brute force lockout engages after repeated failures', async () => {
+  _reset();
+  const ip = '203.0.113.99';
+  assert.equal(isLocked(ip).locked, false);
+  for (let i = 0; i < 5; i++) await recordFailure(ip);
+  assert.equal(isLocked(ip).locked, true, 'must lock out after 5 failures');
+  assert.ok(isLocked(ip).secondsLeft > 0);
+  _reset();
+  assert.equal(isLocked(ip).locked, false);
+});
+
+test('successful login clears the failure counter', async () => {
+  _reset();
+  const ip = '203.0.113.98';
+  await recordFailure(ip);
+  await recordFailure(ip);
+  recordSuccess(ip);
+  for (let i = 0; i < 4; i++) await recordFailure(ip);
+  assert.equal(isLocked(ip).locked, false, 'counter must have reset on success');
+  _reset();
+});
+
+test('manual publication always records a state-history entry', async () => {
+  // Regression: writing event.status directly before setState() made setState
+  // see no transition, so the manual override left no audit trail (§32).
+  const [ev] = await db.query<any>(`SELECT id FROM event WHERE status <> 'PUBLISHED' LIMIT 1`);
+  const before = await db.query<any>(`SELECT COUNT(*) AS n FROM event_state_history WHERE event_id=$1`, [ev.id]);
+  const { setState } = await import('../src/agents/orchestrator.js');
+  await setState(ev.id, 'PUBLISHED', 'admin', 'manual override: test');
+  await db.query(`UPDATE event SET published_at=COALESCE(published_at, now()) WHERE id=$1`, [ev.id]);
+  const after = await db.query<any>(`SELECT COUNT(*) AS n FROM event_state_history WHERE event_id=$1`, [ev.id]);
+  assert.equal(Number(after[0].n), Number(before[0].n) + 1, 'the transition must be recorded');
+  const [latest] = await db.query<any>(
+    `SELECT to_state, actor, reason FROM event_state_history WHERE event_id=$1 ORDER BY at DESC, id DESC LIMIT 1`, [ev.id]);
+  assert.equal(latest.to_state, 'PUBLISHED');
+  assert.equal(latest.actor, 'admin');
+});

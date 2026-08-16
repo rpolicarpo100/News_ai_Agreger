@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { getDb, migrate } from '../db/index.js';
 import { runIngestion, registerSources } from '../ingestion/ingest.js';
 import { runClustering } from '../pipeline/cluster.js';
-import { runIntelligenceCycle, processEvent } from '../agents/orchestrator.js';
+import { runIntelligenceCycle, processEvent, setState } from '../agents/orchestrator.js';
 import { freshness, relativePt } from '../pipeline/freshness.js';
 import { recordView, viewCounts } from '../pipeline/views.js';
 import { secureHeaders, rateLimit, requireAdmin, clientIp } from './security.js';
@@ -18,6 +18,9 @@ import { allFlags, setFlag, FLAGS, getFlag } from '../core/flags.js';
 import { audit } from '../core/audit.js';
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
 import { renderHome, renderEvent, renderList, renderMap, renderAbout, renderSupport, renderStatus } from '../web/render.js';
+import { renderLogin, renderControlCenter, renderAdminSources, renderReviewQueue, renderAdminEvents, renderAudit, renderSecurity } from '../web/admin.js';
+import { requireSession, requireCsrf, issueSession, clearSession, csrfToken, verifyAdminToken, sessionValid } from './session.js';
+import { isLocked, recordFailure, recordSuccess } from './loginguard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -391,7 +394,8 @@ app.get('/support', async (_req, res) => res.type('html').send(renderSupport()))
 
 // ---------------------------------------------------------------- SEO
 app.get('/robots.txt', (_req, res) => {
-  res.type('text').send(`User-agent: *\nAllow: /\nSitemap: ${publicBase()}/sitemap.xml\n`);
+  res.type('text').send(
+    `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\nSitemap: ${publicBase()}/sitemap.xml\n`);
 });
 app.get('/sitemap.xml', async (_req, res) => {
   const db = await getDb();
@@ -406,6 +410,212 @@ app.get('/sitemap.xml', async (_req, res) => {
 export function publicBase(): string {
   return (process.env.PUBLIC_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 }
+
+// ---------------------------------------------------------------- ADMIN UI (§68)
+// Browser-facing admin. Auth is an httpOnly signed cookie exchanged for the
+// server-side ADMIN_TOKEN; the token itself never reaches the browser.
+const adminForms = express.Router();
+adminForms.use(express.urlencoded({ extended: false, limit: '32kb' }));
+
+function flashFrom(req: Request): { kind: string; msg: string } | undefined {
+  const ok = req.query.ok ? String(req.query.ok) : '';
+  const err = req.query.err ? String(req.query.err) : '';
+  if (ok) return { kind: 'ok', msg: ok.slice(0, 300) };
+  if (err) return { kind: 'err', msg: err.slice(0, 300) };
+  return undefined;
+}
+
+adminForms.get('/login', (req, res) => {
+  if (!process.env.ADMIN_TOKEN) {
+    res.status(503).type('html').send(renderLogin('/admin', 'ADMIN_TOKEN não está configurado neste servidor. A área de administração está fechada por omissão.'));
+    return;
+  }
+  if (sessionValid(req)) { res.redirect(302, '/admin'); return; }
+  const lock = isLocked(clientIp(req));
+  res.type('html').send(renderLogin(String(req.query.next ?? '/admin'), req.query.err ? String(req.query.err) : undefined, lock.secondsLeft));
+});
+
+adminForms.post('/login', rateLimit(20, 60_000), async (req, res) => {
+  const ip = clientIp(req);
+  const lock = isLocked(ip);
+  if (lock.locked) {
+    res.status(429).type('html').send(renderLogin('/admin', undefined, lock.secondsLeft));
+    return;
+  }
+  const token = String((req.body ?? {}).token ?? '');
+  if (!verifyAdminToken(token)) {
+    await recordFailure(ip);
+    res.status(401).type('html').send(renderLogin(String((req.body ?? {}).next ?? '/admin'), 'Token inválido.', isLocked(ip).secondsLeft));
+    return;
+  }
+  recordSuccess(ip);
+  issueSession(res);
+  await audit({ actor: 'admin', action: 'login', objectType: 'session', reason: `admin session opened from ${ip}` });
+  const next = String((req.body ?? {}).next ?? '/admin');
+  res.redirect(302, next.startsWith('/admin') ? next : '/admin');
+});
+
+adminForms.post('/logout', async (req, res) => {
+  if (sessionValid(req)) {
+    await audit({ actor: 'admin', action: 'logout', objectType: 'session', reason: 'admin session closed' });
+  }
+  clearSession(res);
+  res.redirect(302, '/admin/login');
+});
+
+// Everything below requires a valid session.
+adminForms.use(requireSession);
+
+adminForms.get('/', async (req, res) => {
+  const db = await getDb();
+  const [status, recentAudit, recentSecurity] = await Promise.all([
+    systemStatus(),
+    db.query(`SELECT at, actor, action, object_type, reason FROM audit_log ORDER BY at DESC LIMIT 8`),
+    db.query(`SELECT at, kind, severity FROM security_event ORDER BY at DESC LIMIT 8`),
+  ]);
+  res.type('html').send(renderControlCenter({ status, recentAudit, recentSecurity }, csrfToken(req), flashFrom(req)));
+});
+
+adminForms.get('/sources', async (req, res) => {
+  const db = await getDb();
+  const sources = await db.query(
+    `SELECT s.id, s.name, s.homepage_url, s.origin_type, s.country, s.language, s.publisher_group,
+            s.reliability_score, s.reliability_basis, s.blocked,
+            h.status, h.items_last_run, h.response_ms, h.last_error,
+            (SELECT COUNT(*) FROM article a WHERE a.source_id=s.id) AS articles
+     FROM source s LEFT JOIN source_health h ON h.source_id=s.id ORDER BY s.name`);
+  res.type('html').send(renderAdminSources(sources, csrfToken(req), flashFrom(req)));
+});
+
+adminForms.get('/review', async (req, res) => {
+  const db = await getDb();
+  const items = await db.query(
+    `SELECT r.id, r.event_id, r.reason, r.priority, r.created_at, e.title
+     FROM review_queue r JOIN event e ON e.id=r.event_id
+     WHERE r.state='open' ORDER BY r.priority DESC, r.created_at ASC LIMIT 60`);
+  res.type('html').send(renderReviewQueue(items, csrfToken(req), flashFrom(req)));
+});
+
+adminForms.get('/events', async (req, res) => {
+  const db = await getDb();
+  const q = String(req.query.q ?? '').trim();
+  const params: any[] = [];
+  let where = '';
+  if (q) { params.push(`%${q.toLowerCase()}%`); where = `WHERE LOWER(e.title) LIKE $1 OR LOWER(e.id) LIKE $1`; }
+  params.push(60);
+  const events = await db.query(
+    `SELECT e.id, e.slug, e.title, e.category, e.status, e.verification, e.article_count, e.independent_sources,
+            (SELECT value FROM score WHERE event_id=e.id AND kind='confidence' ORDER BY computed_at DESC LIMIT 1) AS confidence
+     FROM event e ${where} ORDER BY e.last_activity_at DESC LIMIT $${params.length}`, params);
+  res.type('html').send(renderAdminEvents(events, q, csrfToken(req), flashFrom(req)));
+});
+
+adminForms.get('/audit', async (req, res) => {
+  const db = await getDb();
+  const entries = await db.query(`SELECT * FROM audit_log ORDER BY at DESC LIMIT 200`);
+  res.type('html').send(renderAudit(entries, flashFrom(req)));
+});
+
+adminForms.get('/security', async (req, res) => {
+  const db = await getDb();
+  const events = await db.query(`SELECT * FROM security_event ORDER BY at DESC LIMIT 200`);
+  res.type('html').send(renderSecurity(events, flashFrom(req)));
+});
+
+// ---- mutating routes: CSRF + mandatory reason ----
+adminForms.use(requireCsrf);
+
+function reasonOf(req: Request): string | null {
+  const r = String((req.body ?? {}).reason ?? '').trim();
+  return r.length >= 3 ? r.slice(0, 400) : null;
+}
+
+adminForms.post('/flags', async (req, res) => {
+  const { key, value } = req.body ?? {};
+  const reason = reasonOf(req);
+  if (!reason) { res.redirect(302, '/admin?err=' + encodeURIComponent('É obrigatório indicar um motivo.')); return; }
+  if (!Object.values(FLAGS).includes(key) || typeof value !== 'string') {
+    res.redirect(302, '/admin?err=' + encodeURIComponent('Flag inválida.')); return;
+  }
+  await setFlag(key, value, 'admin', reason);
+  res.redirect(302, '/admin?ok=' + encodeURIComponent(`${key} → ${value}`));
+});
+
+adminForms.post('/sources/:id/block', async (req, res) => {
+  const db = await getDb();
+  const reason = reasonOf(req);
+  if (!reason) { res.redirect(302, '/admin/sources?err=' + encodeURIComponent('É obrigatório indicar um motivo.')); return; }
+  const blocked = String((req.body ?? {}).blocked) === 'true';
+  const id = String(req.params.id);
+  const prev = await db.query<{ blocked: boolean }>(`SELECT blocked FROM source WHERE id=$1`, [id]);
+  if (!prev.length) { res.redirect(302, '/admin/sources?err=' + encodeURIComponent('Fonte não encontrada.')); return; }
+  await db.query(`UPDATE source SET blocked=$2 WHERE id=$1`, [id, blocked]);
+  await audit({ actor: 'admin', action: 'block_source', objectType: 'source', objectId: id,
+    prevState: prev[0].blocked, newState: blocked, reason });
+  res.redirect(302, '/admin/sources?ok=' + encodeURIComponent(`${id} ${blocked ? 'bloqueada' : 'desbloqueada'}`));
+});
+
+adminForms.post('/review/:id/resolve', async (req, res) => {
+  const db = await getDb();
+  const reason = reasonOf(req);
+  if (!reason) { res.redirect(302, '/admin/review?err=' + encodeURIComponent('É obrigatório indicar um motivo.')); return; }
+  const decision = String((req.body ?? {}).decision ?? '');
+  if (!['approved', 'rejected', 'held'].includes(decision)) {
+    res.redirect(302, '/admin/review?err=' + encodeURIComponent('Decisão inválida.')); return;
+  }
+  const rows = await db.query<any>(`SELECT * FROM review_queue WHERE id=$1`, [Number(req.params.id)]);
+  if (!rows.length) { res.redirect(302, '/admin/review?err=' + encodeURIComponent('Item não encontrado.')); return; }
+  await db.query(`UPDATE review_queue SET state=$2, resolved_by='admin', resolved_at=now() WHERE id=$1`,
+    [Number(req.params.id), decision]);
+  if (decision === 'approved') {
+    // setState must run BEFORE any direct status write, otherwise it sees no
+    // transition and skips the history entry (§32: never silently overwrite).
+    await setState(rows[0].event_id, 'PUBLISHED', 'admin', `human review approved: ${reason}`);
+    await db.query(`UPDATE event SET published_at=COALESCE(published_at, now()) WHERE id=$1`, [rows[0].event_id]);
+  }
+  await audit({ actor: 'admin', action: 'review_resolve', objectType: 'event', objectId: rows[0].event_id,
+    prevState: rows[0].state, newState: decision, reason });
+  res.redirect(302, '/admin/review?ok=' + encodeURIComponent(`Evento ${decision}`));
+});
+
+adminForms.post('/events/:id/status', async (req, res) => {
+  const db = await getDb();
+  const reason = reasonOf(req);
+  if (!reason) { res.redirect(302, '/admin/events?err=' + encodeURIComponent('É obrigatório indicar um motivo.')); return; }
+  const status = String((req.body ?? {}).status ?? '');
+  if (!['PUBLISHED', 'SUPERVISOR_REVIEW', 'ARCHIVED'].includes(status)) {
+    res.redirect(302, '/admin/events?err=' + encodeURIComponent('Estado inválido.')); return;
+  }
+  const id = String(req.params.id);
+  const prev = await db.query<{ status: string }>(`SELECT status FROM event WHERE id=$1`, [id]);
+  if (!prev.length) { res.redirect(302, '/admin/events?err=' + encodeURIComponent('Evento não encontrado.')); return; }
+  // setState writes both the event row and its state history (§32: never silent).
+  await setState(id, status, 'admin', `manual override: ${reason}`);
+  if (status === 'PUBLISHED') {
+    await db.query(`UPDATE event SET published_at=COALESCE(published_at, now()) WHERE id=$1`, [id]);
+  }
+  await audit({ actor: 'admin', action: 'event_status_override', objectType: 'event', objectId: id,
+    prevState: prev[0].status, newState: status, reason });
+  res.redirect(302, '/admin/events?ok=' + encodeURIComponent(`${id} → ${status}`));
+});
+
+adminForms.post('/pipeline/run', async (req, res) => {
+  const reason = reasonOf(req);
+  if (!reason) { res.redirect(302, '/admin?err=' + encodeURIComponent('É obrigatório indicar um motivo.')); return; }
+  await audit({ actor: 'admin', action: 'pipeline_run', objectType: 'pipeline', objectId: 'manual', reason });
+  try {
+    const ing = await runIngestion();
+    const cl = await runClustering();
+    const cy = await runIntelligenceCycle();
+    res.redirect(302, '/admin?ok=' + encodeURIComponent(
+      `Ingeridos ${ing.totalInserted} · novos eventos ${cl.newEvents} · anexados ${cl.attached} · publicados ${cy.filter((c) => c.published).length}`));
+  } catch (err: any) {
+    // §74: show the real failure.
+    res.redirect(302, '/admin?err=' + encodeURIComponent(`Falha no pipeline: ${String(err?.message ?? err).slice(0, 200)}`));
+  }
+});
+
+app.use('/admin', adminForms);
 
 app.use((_req, res) => res.status(404).type('html').send(renderList({ title: '404', events: [], note: 'Página não encontrada.' })));
 
