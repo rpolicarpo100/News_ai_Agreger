@@ -4,6 +4,7 @@ import { runIngestion } from './ingestion/ingest.js';
 import { runClustering } from './pipeline/cluster.js';
 import { runIntelligenceCycle } from './agents/orchestrator.js';
 import { buildGraph } from './pipeline/graph.js';
+import { runAlerts } from './pipeline/alerts.js';
 import { guardAgainstTestData } from './core/testguard.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -17,7 +18,8 @@ async function cycle(label: string): Promise<void> {
     const cl = await runClustering();
     const cy = await runIntelligenceCycle();
     const gr = await buildGraph();
-    console.log(`[${label}] ingested=${ing.totalInserted} newEvents=${cl.newEvents} attached=${cl.attached} processed=${cy.length} published=${cy.filter((c) => c.published).length} edges=${gr.edges}`);
+    const al = await runAlerts();
+    console.log(`[${label}] ingested=${ing.totalInserted} newEvents=${cl.newEvents} attached=${cl.attached} processed=${cy.length} published=${cy.filter((c) => c.published).length} edges=${gr.edges} notifs=${al.notificationsCreated}`);
   } catch (err) {
     // Section 74: log the real failure. Never substitute data.
     console.error(`[${label}] cycle failed:`, err);

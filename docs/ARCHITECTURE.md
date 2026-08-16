@@ -47,6 +47,7 @@ Specification §11. A 98-reliability instrument like USGS reporting a magnitude 
 | Control | `audit_log`, `security_event`, `system_flag`, `schema_meta` |
 | Accounts | `app_user`, `user_session`, `follow`, `bookmark` |
 | Graph | `event_relation` |
+| Alerts | `alert_rule`, `notification` |
 
 Design notes worth stating:
 
@@ -87,6 +88,17 @@ Priority order:
 Hard blockers run before scoring: >250 km apart with known coordinates, different countries without coordinates, or differing provider event ids ⇒ never merged.
 
 > Both blockers exist because of defects observed against live data. Without provider identity, 255 unrelated GDACS wildfire alerts collapsed into a single "event" purely because they share a headline template. Without the proximity rule, distant same-category stories merged. Conversely, the similarity path is what correctly merges BBC + Guardian on one airstrike, and RTP + Público on one story.
+
+### Alerts (`src/pipeline/alerts.ts`)
+
+Rules are evaluated against published events on every pipeline cycle, and immediately on creation so a new rule is never silently empty until the next run. Two invariants:
+
+- **No unconstrained rules.** A rule with no filter at all is refused rather than matching everything.
+- **N/A never passes a threshold.** Score comparisons coalesce a missing value to `-1`, so an event whose confidence could not be computed does not satisfy `confidence >= 50`. Treating unknown as passing would manufacture certainty.
+
+Notifications carry a `UNIQUE (user_id, rule_id, event_id)` constraint, so re-running the cycle cannot re-notify. Deleting an account cascades to both rules and notifications.
+
+The Daily Brief selects and ranks real events; it does not write prose. Its window is measured on `published_at` (server-generated) rather than `last_activity_at`, because feeds legitimately publish timestamps a few minutes in the future and those were leaking events into windows they did not belong to. That same discovery led to clamping `last_activity_at` to `now()` at write time in the clustering stage.
 
 ### Event graph (`src/pipeline/graph.ts`)
 
@@ -171,7 +183,7 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 | 42 | Source health | Built and surfaced on `/status` |
 | 43–56 | Frontend, navigation, dashboard, cards, event page, map, search, filters, trending, most viewed, today | Built |
 | 56 | Personal Intelligence | Built: accounts, follows (country/category/event), bookmarks, personal feed, GDPR export + erasure |
-| 57–58 | Alerts, daily brief | Follow graph now exists; delivery channel not configured, so not exposed |
+| 57–58 | Alerts, daily brief | Built: rule engine with in-app inbox delivery; brief selects real events and generates no prose |
 | 59–60 | Sharing, SEO | Canonical URLs, OG tags, JSON-LD, sitemap, robots |
 | 61 | Multilingual | UI in PT-PT; category labels centralised for extraction |
 | 62 | Database | 23 tables |
@@ -205,8 +217,8 @@ A hand-written QR encoder was built first and discarded: it produced correctly-s
 ## 6. Roadmap
 
 **Next**
-1. Alerts and the AI Daily Brief. The follow graph they depend on now exists. Blocked on a delivery channel: an alert system with nowhere to deliver would be a button that does nothing (§4). Needs an email provider (or in-app inbox) to be honest.
-2. Password reset. Requires the same email channel as alerts, so the two ship together.
+1. LLM specialist agents behind the existing `Agent` interface, constrained to structure extraction and cited claims, versioned and supervised like every other agent.
+2. Email as a second alert channel, plus password reset (both need the same provider, so they ship together). The in-app inbox means neither is blocking today.
 3. Graph traversal UI: explore multi-hop paths between events, with every hop showing its evidence.
 
 **Then**

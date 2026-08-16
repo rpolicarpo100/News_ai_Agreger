@@ -30,6 +30,11 @@ import {
 } from '../core/users.js';
 import { parseCookies } from './session.js';
 import { loadSupportConfig } from '../core/support.js';
+import {
+  createRule, listRules, deleteRule, setRuleEnabled, runAlerts,
+  listNotifications, unreadCount, markAllRead, buildDailyBrief,
+} from '../pipeline/alerts.js';
+import { renderAlerts, renderInbox, renderBrief } from '../web/alerts.js';
 import { qrSvg } from '../core/qr.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -637,8 +642,9 @@ adminForms.post('/pipeline/run', async (req, res) => {
     const cl = await runClustering();
     const cy = await runIntelligenceCycle();
     const gr = await buildGraph();
+    const al = await runAlerts();
     res.redirect(302, '/admin?ok=' + encodeURIComponent(
-      `Ingeridos ${ing.totalInserted} · novos eventos ${cl.newEvents} · anexados ${cl.attached} · publicados ${cy.filter((c) => c.published).length} · relações ${gr.edges}`));
+      `Ingeridos ${ing.totalInserted} · novos eventos ${cl.newEvents} · anexados ${cl.attached} · publicados ${cy.filter((c) => c.published).length} · relações ${gr.edges} · notificações ${al.notificationsCreated}`));
   } catch (err: any) {
     // §74: show the real failure.
     res.redirect(302, '/admin?err=' + encodeURIComponent(`Falha no pipeline: ${String(err?.message ?? err).slice(0, 200)}`));
@@ -794,8 +800,13 @@ my.get('/', async (req, res) => {
   const flash = req.query.ok ? { kind: 'ok', msg: String(req.query.ok).slice(0, 200) }
     : req.query.err ? { kind: 'err', msg: String(req.query.err).slice(0, 200) } : undefined;
 
+  const [unread, alertCount] = await Promise.all([
+    unreadCount(user.id),
+    db.query<{ n: string }>(`SELECT COUNT(*) AS n FROM alert_rule WHERE user_id=$1 AND enabled`, [user.id])
+      .then((r) => Number(r[0]?.n ?? 0)),
+  ]);
   res.type('html').send(renderMyIntelligence({
-    user, csrf, follows,
+    user, csrf, follows, unread, alertCount,
     events: decorate(events), bookmarks: decorate(bookmarks),
     countries: countryOpts, flash,
   }));
@@ -824,6 +835,69 @@ my.post('/bookmark', myCsrf, async (req, res) => {
   res.redirect(302, String(req.headers.referer ?? '/my'));
 });
 
+// ---- Alerts (§57) ----
+my.get('/alerts', async (req, res) => {
+  const db = await getDb();
+  const { user, csrf } = (req as any).session;
+  const rules = await db.query<any>(
+    `SELECT r.*, (SELECT COUNT(*)::int FROM notification n WHERE n.rule_id=r.id) AS matches
+     FROM alert_rule r WHERE r.user_id=$1 ORDER BY r.created_at DESC`, [user.id]);
+  const countries = await db.query<any>(
+    `SELECT country, COUNT(*)::int AS n FROM event WHERE status='PUBLISHED' AND country IS NOT NULL
+     GROUP BY country ORDER BY n DESC LIMIT 40`);
+  const flash = req.query.ok ? { kind: 'ok', msg: String(req.query.ok).slice(0, 200) }
+    : req.query.err ? { kind: 'err', msg: String(req.query.err).slice(0, 200) } : undefined;
+  res.type('html').send(renderAlerts({ rules, countries, csrf, flash }));
+});
+
+my.post('/alerts', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  const b = req.body ?? {};
+  const num = (v: any) => {
+    const s = String(v ?? '').trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? Math.round(n) : NaN;
+  };
+  const out = await createRule(user.id, {
+    name: String(b.name ?? ''),
+    category: String(b.category ?? '') || null,
+    country: String(b.country ?? '') || null,
+    min_confidence: num(b.min_confidence),
+    min_impact: num(b.min_impact),
+    min_relevance: num(b.min_relevance),
+    only_verified: b.only_verified === 'true',
+  });
+  if (out.error) { res.redirect(302, '/my/alerts?err=' + encodeURIComponent(out.error)); return; }
+  // Evaluate immediately so a new rule is not silently empty until the next cycle.
+  await runAlerts();
+  res.redirect(302, '/my/alerts?ok=' + encodeURIComponent('Alerta criado e avaliado.'));
+});
+
+my.post('/alerts/:id/toggle', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  await setRuleEnabled(user.id, Number(req.params.id), String((req.body ?? {}).enabled) === 'true');
+  res.redirect(302, '/my/alerts');
+});
+
+my.post('/alerts/:id/delete', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  await deleteRule(user.id, Number(req.params.id));
+  res.redirect(302, '/my/alerts?ok=' + encodeURIComponent('Alerta eliminado.'));
+});
+
+// ---- Inbox ----
+my.get('/inbox', async (req, res) => {
+  const { user, csrf } = (req as any).session;
+  const [items, unread] = await Promise.all([listNotifications(user.id), unreadCount(user.id)]);
+  res.type('html').send(renderInbox({ items, unread, csrf }));
+});
+
+my.post('/inbox/read', myCsrf, async (req, res) => {
+  await markAllRead((req as any).session.user.id);
+  res.redirect(302, '/my/inbox');
+});
+
 my.get('/export', async (req, res) => {
   const { user } = (req as any).session;
   const data = await exportUserData(user.id);
@@ -839,6 +913,21 @@ my.post('/delete', myCsrf, async (req, res) => {
 });
 
 app.use('/my', my);
+
+app.get('/brief', async (req, res) => {
+  const sess = await currentUser(req);
+  const brief = await buildDailyBrief(sess?.user.id ?? null, Number(req.query.h ?? 24));
+  res.type('html').send(renderBrief({
+    ...brief,
+    sections: brief.sections.map((s) => ({ heading: s.heading, events: decorate(s.events) })),
+  }, !!sess));
+});
+
+app.get('/api/brief', rateLimit(60, 60_000), async (req, res) => {
+  const sess = await currentUser(req);
+  const brief = await buildDailyBrief(sess?.user.id ?? null, Number(req.query.h ?? 24));
+  res.json({ ...brief, sections: brief.sections.map((s) => ({ heading: s.heading, events: decorate(s.events) })) });
+});
 
 app.use((_req, res) => res.status(404).type('html').send(renderList({ title: '404', events: [], note: 'Página não encontrada.' })));
 

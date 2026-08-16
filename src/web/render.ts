@@ -108,7 +108,7 @@ const NAV: Array<[string, string]> = [
   ['/', 'Home'], ['/today', 'Hoje'], ['/breaking', 'Breaking'], ['/trending', 'Trending'],
   ['/most-viewed', 'Mais Vistos'], ['/map', 'Mapa'], ['/category/natural_events', 'Naturais'],
   ['/category/war_conflict', 'Conflito'], ['/category/economy', 'Economia'], ['/category/technology', 'Tecnologia'],
-  ['/status', 'Estado'], ['/about', 'Metodologia'], ['/my', 'My Intelligence'],
+  ['/brief', 'Daily Brief'], ['/status', 'Estado'], ['/about', 'Metodologia'], ['/my', 'My Intelligence'],
 ];
 
 interface LayoutOpts {

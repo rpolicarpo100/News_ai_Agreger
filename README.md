@@ -159,6 +159,16 @@ The orchestrator selects only relevant agents (an earthquake does not run the cr
 
 `/admin`, `/api/admin`, `/my` and `/account` are excluded from `robots.txt`.
 
+## Alerts and Daily Brief (§57, §58)
+
+`/my/alerts` defines rules over real events — category, country, verification status, and minimum confidence / life impact / relevance. Matches arrive in an **in-app inbox** at `/my/inbox`, each notification naming the criteria that fired it.
+
+Delivery is in-app deliberately. An alert system whose only channel is an unconfigured email provider would be a button that does nothing (§4); an inbox works with zero external dependencies, and email can be added later as a second channel without touching the matching logic.
+
+Two rules keep this honest: a rule with **no criteria is refused** (it would match the entire firehose), and **an N/A score never satisfies a threshold** — an unknown value is not treated as passing.
+
+`/brief` is the Daily Intelligence Brief: highest life impact, best-corroborated by independent publisher groups, open source conflicts, plus a personal section for signed-in users. Every line is a stored title with its stored scores. Nothing is summarised into new sentences, because that is where invented facts appear (§89: the AI organises; it is not the authority). An empty window renders `NO VERIFIED DATA AVAILABLE`, not filler.
+
 ## Support (§83, §84)
 
 `/support` shows real, verified payment details: a Revolut link and an Ethereum address, each with a locally-generated QR code and a copy button.
@@ -200,7 +210,7 @@ Every admin action is written to `audit_log` with actor, before state, after sta
 
 ## Testing
 
-76 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, EIP-55 validation, QR correctness, donation independence, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
+89 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, EIP-55 validation, QR correctness, donation independence, alert matching, notification de-duplication, cross-user rule isolation, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
 
 ```bash
 npm run gate   # the full pre-deploy sequence; any failure blocks deployment
@@ -216,7 +226,7 @@ CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 Also built: the Admin Control Center (§68, §69, §41) and accounts with My Intelligence (§56, §71).
 
-**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess. Alerts and the daily brief are next: the follow graph they depend on now exists, but a notification system with no delivery channel configured would be a button that does nothing.
+**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess.
 
 See `docs/ARCHITECTURE.md` for the full section-by-section mapping and the roadmap.
 

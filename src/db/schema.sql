@@ -322,3 +322,37 @@ CREATE TABLE IF NOT EXISTS event_relation (
 );
 CREATE INDEX IF NOT EXISTS idx_relation_from ON event_relation(from_event, strength DESC);
 CREATE INDEX IF NOT EXISTS idx_relation_to   ON event_relation(to_event, strength DESC);
+
+-- ---------------------------------------------------------------- ALERTS (§57, §58)
+-- A rule the user defines. Matching is evaluated against real published events;
+-- a rule that matches nothing produces nothing.
+CREATE TABLE IF NOT EXISTS alert_rule (
+  id            BIGSERIAL PRIMARY KEY,
+  user_id       TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  -- Filters. NULL means "no constraint on this dimension".
+  category      TEXT,
+  country       TEXT,
+  min_confidence INTEGER,
+  min_impact    INTEGER,
+  min_relevance INTEGER,
+  only_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_fired_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_alert_user ON alert_rule(user_id, enabled);
+
+-- Delivered notifications. In-app by default: no external channel required, so
+-- the feature works rather than being a button that does nothing (§4).
+CREATE TABLE IF NOT EXISTS notification (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  rule_id    BIGINT REFERENCES alert_rule(id) ON DELETE SET NULL,
+  event_id   TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+  reason     TEXT NOT NULL,          -- which filters matched, in plain language
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  read_at    TIMESTAMPTZ,
+  UNIQUE (user_id, rule_id, event_id)   -- never notify twice for the same match
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notification(user_id, created_at DESC);

@@ -4,6 +4,7 @@ import { registerSources, runIngestion } from './ingestion/ingest.js';
 import { runClustering } from './pipeline/cluster.js';
 import { runIntelligenceCycle } from './agents/orchestrator.js';
 import { buildGraph } from './pipeline/graph.js';
+import { runAlerts } from './pipeline/alerts.js';
 
 const CYCLE_MIN = Number(process.env.CYCLE_MINUTES ?? 10);
 const ONCE = process.argv.includes('--once');
@@ -14,6 +15,7 @@ async function cycle(): Promise<void> {
   const cl = await runClustering();
   const cy = await runIntelligenceCycle();
   const gr = await buildGraph();
+  const al = await runAlerts();
   console.log(JSON.stringify({
     at: new Date().toISOString(), ms: Date.now() - t0,
     ingested: ing.totalInserted,
@@ -21,6 +23,7 @@ async function cycle(): Promise<void> {
     clustering: cl,
     processed: cy.length, published: cy.filter((c) => c.published).length,
     graph: gr,
+    alerts: al,
     heldForReview: cy.filter((c) => !c.published).map((c) => ({ id: c.eventId, why: c.gate.failures.concat(c.supervisor.decision) })),
   }, null, 2));
 }

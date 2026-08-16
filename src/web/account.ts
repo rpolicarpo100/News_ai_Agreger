@@ -73,6 +73,8 @@ interface MyData {
   bookmarks: any[];
   countries: Array<{ country: string; n: number }>;
   csrf: string;
+  unread?: number;
+  alertCount?: number;
   flash?: { kind: string; msg: string };
 }
 
@@ -120,6 +122,11 @@ export function renderMyIntelligence(d: MyData): string {
     body: `
     <h1>My Intelligence</h1>
     <p class="small dim">Feed construído exclusivamente a partir do que segue. Sessão iniciada como <span class="mono">${esc(d.user.email)}</span>.</p>
+    <div class="chips" style="margin:12px 0 4px">
+      <a class="tagbtn" href="/my/inbox">✉ Caixa de entrada${d.unread ? ` (${d.unread})` : ''}</a>
+      <a class="tagbtn" href="/my/alerts">🔔 Alertas${d.alertCount ? ` (${d.alertCount})` : ''}</a>
+      <a class="tagbtn" href="/brief">📄 Daily Brief</a>
+    </div>
     ${d.flash ? `<div class="notice ${esc(d.flash.kind)}">${esc(d.flash.msg)}</div>` : ''}
 
     <h2 class="sec">O seu feed${followed.size ? ` — ${followedCategories.length} categoria(s), ${followedCountries.length} país(es), ${followedEvents.length} evento(s)` : ''}</h2>

@@ -146,7 +146,7 @@ export async function runClustering(): Promise<ClusterReport> {
       await db.query(
         `INSERT INTO event (id, slug, title, title_source_id, category, status, country, place, lat, lon,
            geo_precision, first_seen_at, last_activity_at, article_count, independent_sources, measurements)
-         VALUES ($1,$2,$3,$4,$5,'CLUSTERED',$6,$7,$8,$9,$10,$11,$11,1,1,$12)
+         VALUES ($1,$2,$3,$4,$5,'CLUSTERED',$6,$7,$8,$9,$10,LEAST($11,now()),LEAST($11,now()),1,1,$12)
          ON CONFLICT (id) DO NOTHING`,
         [id, slugify(art.title), art.title, art.id, art.category ?? 'unclassified',
          art.geo_country, art.geo_place, art.lat, art.lon, art.geo_precision, when.toISOString(),
@@ -212,7 +212,11 @@ async function attach(art: ArticleRow, evId: string, reason: string): Promise<vo
      SELECT 'event', $1, 'clustered_article', $2, $3, $4, url, 'computed' FROM article WHERE id=$4`,
     [evId, reason, art.source_id, art.id],
   );
-  await db.query(`UPDATE event SET last_activity_at = GREATEST(last_activity_at, $2) WHERE id=$1`, [evId, when]);
+  // Clamp to now: some feeds publish timestamps slightly in the future
+  // (clock drift), and an event must never claim activity that has not happened.
+  await db.query(
+    `UPDATE event SET last_activity_at = LEAST(GREATEST(last_activity_at, $2), now()) WHERE id=$1`,
+    [evId, when]);
 }
 
 /** article_count + independent_sources (Section 13: distinct publisher groups). */

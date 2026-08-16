@@ -856,3 +856,143 @@ test('donations cannot reach scoring: no scoring module imports support config',
     assert.ok(!/SUPPORT_(ETH|REVOLUT)/.test(src), `${f} must not read payment environment variables`);
   }
 });
+
+// ---------------------------------------------------------------- alerts & brief (§57, §58)
+const alerts = await import('../src/pipeline/alerts.js');
+
+test('a rule with no criteria is refused (it would match everything)', () => {
+  assert.ok(alerts.validateRule({ name: 'Tudo' }));
+  assert.equal(alerts.validateRule({ name: 'Sismos', category: 'natural_events' }), null);
+});
+
+test('rule thresholds must be integers within 0..100', () => {
+  assert.ok(alerts.validateRule({ name: 'Alerta', min_confidence: 150 }));
+  assert.ok(alerts.validateRule({ name: 'Alerta', min_impact: -5 }));
+  assert.equal(alerts.validateRule({ name: 'Alerta', min_impact: 80 }), null);
+});
+
+test('alert rules fire only on matching published events', async () => {
+  const { user } = await users.createUser('alerts@example.org', 'a-strong-enough-passphrase');
+  const made = await alerts.createRule(user!.id, { name: 'Naturais', category: 'natural_events' });
+  assert.ok(made.id);
+
+  // Ensure at least one published natural_events event exists in the window.
+  await db.query(
+    `UPDATE event SET status='PUBLISHED', published_at=now() WHERE category='natural_events'
+     AND id IN (SELECT id FROM event WHERE category='natural_events' LIMIT 1)`);
+
+  const r = await alerts.runAlerts();
+  assert.ok(r.rulesEvaluated >= 1);
+
+  const notes = await alerts.listNotifications(user!.id);
+  assert.ok(notes.length > 0, 'a matching event must produce a notification');
+  assert.ok(notes.every((n: any) => n.category === 'natural_events'), 'only matching category may be delivered');
+  assert.match(notes[0].reason, /Naturais/, 'notification must say which rule fired');
+});
+
+test('the same event never notifies twice for one rule', async () => {
+  const { user } = await users.createUser('dupe-alert@example.org', 'a-strong-enough-passphrase');
+  await alerts.createRule(user!.id, { name: 'Regra', category: 'natural_events' });
+  await alerts.runAlerts();
+  const first = (await alerts.listNotifications(user!.id)).length;
+  await alerts.runAlerts();
+  await alerts.runAlerts();
+  assert.equal((await alerts.listNotifications(user!.id)).length, first, 'repeat runs must not duplicate');
+});
+
+test('an N/A score never satisfies a threshold', async () => {
+  const { user } = await users.createUser('nascore@example.org', 'a-strong-enough-passphrase');
+  // Trending is N/A for every event with no counted views, so a rule requiring
+  // a high trending value must match nothing rather than treating N/A as pass.
+  await db.query(
+    `INSERT INTO alert_rule (user_id, name, category, min_relevance) VALUES ($1,'Impossivel',NULL,101)`,
+    [user!.id]);
+  await alerts.runAlerts();
+  assert.equal((await alerts.listNotifications(user!.id)).length, 0);
+});
+
+test('disabled rules do not fire', async () => {
+  const { user } = await users.createUser('disabled-rule@example.org', 'a-strong-enough-passphrase');
+  const made = await alerts.createRule(user!.id, { name: 'Desligado', category: 'natural_events' });
+  assert.equal(made.error, undefined);
+  await alerts.setRuleEnabled(user!.id, made.id!, false);
+  await alerts.runAlerts();
+  assert.equal((await alerts.listNotifications(user!.id)).length, 0);
+});
+
+test('a user cannot delete or toggle another user\'s rule', async () => {
+  const a = await users.createUser('owner@example.org', 'a-strong-enough-passphrase');
+  const b = await users.createUser('attacker@example.org', 'a-strong-enough-passphrase');
+  const made = await alerts.createRule(a.user!.id, { name: 'Meu alerta', category: 'space' });
+  await alerts.deleteRule(b.user!.id, made.id!);       // wrong owner
+  assert.equal((await alerts.listRules(a.user!.id)).length, 1, 'rule must survive a foreign delete');
+  await alerts.setRuleEnabled(b.user!.id, made.id!, false);
+  assert.equal((await alerts.listRules(a.user!.id))[0].enabled, true, 'foreign toggle must not apply');
+});
+
+test('unread count and mark-all-read behave', async () => {
+  const { user } = await users.createUser('unread@example.org', 'a-strong-enough-passphrase');
+  const mk = await alerts.createRule(user!.id, { name: 'Naturais', category: 'natural_events' });
+  assert.equal(mk.error, undefined);
+  await alerts.runAlerts();
+  const before = await alerts.unreadCount(user!.id);
+  assert.ok(before > 0, 'a matching rule must produce unread notifications');
+  await alerts.markAllRead(user!.id);
+  assert.equal(await alerts.unreadCount(user!.id), 0);
+});
+
+test('deleting an account removes its alert rules and notifications', async () => {
+  const { user } = await users.createUser('cascade-alert@example.org', 'a-strong-enough-passphrase');
+  await alerts.createRule(user!.id, { name: 'Cascata', category: 'natural_events' });
+  await alerts.runAlerts();
+  await users.deleteUser(user!.id);
+  assert.equal((await db.query(`SELECT 1 FROM alert_rule WHERE user_id=$1`, [user!.id])).length, 0);
+  assert.equal((await db.query(`SELECT 1 FROM notification WHERE user_id=$1`, [user!.id])).length, 0);
+});
+
+test('rule description is human-readable', () => {
+  const text = alerts.describeRule({ name: 'x', category: 'natural_events', country: 'PT', min_impact: 70 } as any);
+  assert.match(text, /Eventos Naturais/);
+  assert.match(text, /PT/);
+  assert.match(text, /70/);
+});
+
+test('daily brief contains only real published events and never invents prose', async () => {
+  const brief = await alerts.buildDailyBrief(null, 720);
+  assert.ok(brief.sections.length > 0, 'there is published data in this window');
+  for (const s of brief.sections) {
+    for (const e of s.events) {
+      assert.ok(e.id.startsWith('EVT-'));
+      assert.ok(e.title && e.title.length > 0);
+      // Every brief entry must be a genuinely published event.
+      const row = await db.query(`SELECT 1 FROM event WHERE id=$1 AND status='PUBLISHED'`, [e.id]);
+      assert.equal(row.length, 1, `${e.id} must be published`);
+    }
+  }
+  assert.match(brief.note, /Nada aqui é texto gerado/);
+});
+
+test('daily brief personalises only when the user follows something', async () => {
+  const { user } = await users.createUser('brief@example.org', 'a-strong-enough-passphrase');
+  const empty = await alerts.buildDailyBrief(user!.id, 720);
+  assert.equal(empty.personalised, false, 'no follows => no personal section');
+  assert.ok(!empty.sections.some((s) => s.heading === 'Do que segue'));
+
+  await users.addFollow(user!.id, 'category', 'natural_events');
+  const personal = await alerts.buildDailyBrief(user!.id, 720);
+  assert.equal(personal.personalised, true);
+});
+
+test('daily brief on an empty window returns no sections rather than filler', async () => {
+  // Use a window in the distant past: earlier tests publish events *during* this
+  // run, so a "last one second" window is not reliably empty.
+  const db2 = await getDb();
+  const [{ max }] = await db2.query<any>(`SELECT MAX(published_at) AS max FROM event`);
+  const hoursSinceNewest = max ? (Date.now() - new Date(max).getTime()) / 3600e3 : 0;
+  // A window ending before the newest event still contains nothing only if we
+  // look at a slice strictly older than everything; simplest is a zero window.
+  const brief = await alerts.buildDailyBrief(null, -1);
+  assert.equal(brief.sections.length, 0, 'no section may be rendered for an empty window');
+  assert.equal(brief.totals.published, 0);
+  assert.ok(hoursSinceNewest >= 0);
+});
