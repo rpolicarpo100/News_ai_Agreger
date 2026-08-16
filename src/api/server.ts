@@ -12,6 +12,7 @@ import { runIngestion, registerSources } from '../ingestion/ingest.js';
 import { runClustering } from '../pipeline/cluster.js';
 import { runIntelligenceCycle, processEvent, setState } from '../agents/orchestrator.js';
 import { freshness, relativePt } from '../pipeline/freshness.js';
+import { buildGraph, relatedEvents } from '../pipeline/graph.js';
 import { recordView, viewCounts } from '../pipeline/views.js';
 import { secureHeaders, rateLimit, requireAdmin, clientIp } from './security.js';
 import { allFlags, setFlag, FLAGS, getFlag } from '../core/flags.js';
@@ -244,7 +245,8 @@ admin.post('/pipeline/run', async (_req, res) => {
   const ing = await runIngestion();
   const cl = await runClustering();
   const cy = await runIntelligenceCycle();
-  res.json({ ingestion: ing, clustering: cl, intelligence: { processed: cy.length, published: cy.filter((c) => c.published).length } });
+  const gr = await buildGraph();
+  res.json({ ingestion: ing, clustering: cl, intelligence: { processed: cy.length, published: cy.filter((c) => c.published).length }, graph: gr });
 });
 app.use('/api/admin', admin);
 
@@ -272,12 +274,8 @@ export async function eventDetail(id: string) {
   const views = await viewCounts(id);
   const f = freshness(e.category, e.last_activity_at);
 
-  // Related events (Section 29): shared country or category, overlapping window.
-  const related = await db.query<any>(
-    `SELECT id, slug, title, category, country, last_activity_at FROM event
-     WHERE status='PUBLISHED' AND id<>$1 AND (country=$2 OR category=$3)
-     ORDER BY ABS(EXTRACT(EPOCH FROM (last_activity_at - $4::timestamptz))) ASC LIMIT 6`,
-    [id, e.country, e.category, e.last_activity_at]);
+  // Related events (§29): typed, evidenced edges from the event graph.
+  const related = await relatedEvents(id, 8);
 
   const groups = new Map<string, string[]>();
   for (const a of articles as any[]) {
@@ -626,8 +624,9 @@ adminForms.post('/pipeline/run', async (req, res) => {
     const ing = await runIngestion();
     const cl = await runClustering();
     const cy = await runIntelligenceCycle();
+    const gr = await buildGraph();
     res.redirect(302, '/admin?ok=' + encodeURIComponent(
-      `Ingeridos ${ing.totalInserted} · novos eventos ${cl.newEvents} · anexados ${cl.attached} · publicados ${cy.filter((c) => c.published).length}`));
+      `Ingeridos ${ing.totalInserted} · novos eventos ${cl.newEvents} · anexados ${cl.attached} · publicados ${cy.filter((c) => c.published).length} · relações ${gr.edges}`));
   } catch (err: any) {
     // §74: show the real failure.
     res.redirect(302, '/admin?err=' + encodeURIComponent(`Falha no pipeline: ${String(err?.message ?? err).slice(0, 200)}`));

@@ -46,6 +46,7 @@ Specification §11. A 98-reliability instrument like USGS reporting a magnitude 
 | Metrics | `event_view` |
 | Control | `audit_log`, `security_event`, `system_flag`, `schema_meta` |
 | Accounts | `app_user`, `user_session`, `follow`, `bookmark` |
+| Graph | `event_relation` |
 
 Design notes worth stating:
 
@@ -86,6 +87,21 @@ Priority order:
 Hard blockers run before scoring: >250 km apart with known coordinates, different countries without coordinates, or differing provider event ids ⇒ never merged.
 
 > Both blockers exist because of defects observed against live data. Without provider identity, 255 unrelated GDACS wildfire alerts collapsed into a single "event" purely because they share a headline template. Without the proximity rule, distant same-category stories merged. Conversely, the similarity path is what correctly merges BBC + Guardian on one airstrike, and RTP + Público on one story.
+
+### Event graph (`src/pipeline/graph.ts`)
+
+Five relation kinds, each edge storing `strength` (0-100) and a written `basis`. Relations are discovered from shared evidence; when two events share nothing measurable, no edge exists.
+
+Tuning against live data drove four corrections, each of which is now a regression test:
+
+1. **False precision.** Gazetteer country centroids are identical for every event in a country, so measuring between two of them reported "0 km apart" at strength 95. Distance is now computed only between coordinates the source actually published (`geo_precision='exact'`); approximate positions degrade to a weaker, clearly-labelled country-level statement (§16).
+2. **Publisher country as location.** `country='GB', geo_precision='unknown'` means only "the BBC published it". A Belgian wildfire was being linked to a Virginia shooting on that basis. Country now counts as a location claim only when it came from the text or from coordinates.
+3. **Template headlines.** Raw Jaccard rated "Green forest fire notification in Angola" and "... in Zambia" as near-identical, producing 3453 meaningless topic edges. Similarity is now IDF-weighted against the current batch, so boilerplate contributes almost nothing: 3453 → 169 edges, with *higher* average strength.
+4. **Boilerplate entities.** "Depth", "UTC", "MMI IV" and navigation chrome like "Today's APOD Archive Submissions" were counting as shared actors. Fixed at both ends: the entity agent rejects runs longer than three words and word-repeating fragments, and the graph filters entities by corpus document-frequency plus a proper-noun shape test.
+
+Points 3 and 4 use corpus statistics rather than hardcoded lists, so they generalise to feeds that have not been added yet.
+
+`cross_domain_impact` links categories that often co-occur meaningfully (war→energy→economy, earthquake→transport), but only with a shared located country and a tight window — and its basis explicitly states that the relation is correlational. Asserting causation from co-occurrence would be precisely the invented conclusion §30 forbids.
 
 ### Agents (`src/agents/`)
 
@@ -145,7 +161,7 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 | 22–24 | Event intelligence, updates, change detection | Built; `score_change` powers "What changed?" |
 | 25–26 | Freshness, trending | Built; category-dependent thresholds; trending needs real views |
 | 27–28 | Anti-manipulation, views | Built |
-| 29 | Event graph | Related-events implemented; full graph is roadmap |
+| 29 | Event graph | Built: 5 typed relation kinds, each edge storing its evidence; correlation never presented as causation |
 | 30 | Scenarios | Deliberately no invented probabilities |
 | 31–32 | Review queue, human override | Built and audited |
 | 33–35 | Audit agent, trail, AI versioning | Built |
@@ -178,8 +194,8 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 
 **Next**
 1. Alerts and the AI Daily Brief. The follow graph they depend on now exists. Blocked on a delivery channel: an alert system with nowhere to deliver would be a button that does nothing (§4). Needs an email provider (or in-app inbox) to be honest.
-2. Full event graph: typed relations (`caused_by`, `escalation_of`, `same_actor`) on top of the current related-events query.
-3. Password reset. Requires the same email channel as alerts, so the two ship together.
+2. Password reset. Requires the same email channel as alerts, so the two ship together.
+3. Graph traversal UI: explore multi-hop paths between events, with every hop showing its evidence.
 
 **Then**
 4. LLM specialist agents behind the existing `Agent` interface, constrained to structure extraction and cited claims, versioned and supervised like every other agent. Cost controls per §67.

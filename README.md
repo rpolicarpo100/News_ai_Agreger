@@ -99,6 +99,21 @@ Feeds that break are reported as broken. arXiv publishes nothing at weekends, so
 | Server-rendered UI | `src/web/render.ts` |
 | Schema (23 tables) | `src/db/schema.sql` |
 
+### Event graph
+
+Related events come from typed, evidenced edges rather than a "same category" guess. Five relation kinds — `same_location`, `same_actor`, `same_topic`, `temporal_sequence`, `cross_domain_impact` — each storing the evidence that produced it, shown to the reader:
+
+```
+[Sequência temporal 61]  M 2.8 - 10 km ENE of Coso Junction, CA
+   Mesmo tipo de acontecimento na mesma área, com 14h de intervalo.
+[Mesmas entidades 76]    Democrats demand answers from Trump on USS Abraham Lincoln
+   Entidades em comum: Trump, Donald Trump, Iran.
+```
+
+`cross_domain_impact` explicitly states that it is correlation, not causation — inferring cause from co-occurrence would be an invented conclusion (§30).
+
+Tuning this against live data cut 5058 edges down to 788 *useful* ones. Four defects, all found by inspecting real output: gazetteer centroids made every pair in a country "0 km apart"; publisher-inferred countries treated a BBC byline as a location; template headlines made unrelated wildfires "the same topic"; and feed furniture ("Depth", "UTC", "APOD Archive Submissions") counted as shared actors. Fixes are corpus-based (IDF weighting, entity document-frequency) rather than hardcoded blocklists, so they generalise to feeds not yet added.
+
 ### Event identity
 
 `EVT-YYYY-MM-DD-XXXXXXXX` — permanent. The title may change; the event does not. This is what makes updates, timelines, history, SEO and the future public API possible.
@@ -175,7 +190,7 @@ Every admin action is written to `audit_log` with actor, before state, after sta
 
 ## Testing
 
-51 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps).
+63 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
 
 ```bash
 npm run gate   # the full pre-deploy sequence; any failure blocks deployment

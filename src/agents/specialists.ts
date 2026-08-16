@@ -81,6 +81,11 @@ export const entityAgent: Agent = {
         const clean = m.trim();
         if (clean.length < 3 || ENTITY_STOP.has(clean)) continue;
         if (/^[A-ZÀ-Þ]+$/.test(clean) && clean.length < 3) continue;
+        // Reject navigation chrome captured by the capitalised-run regex, e.g.
+        // "Today's APOD Archive Submissions" or a word repeated back-to-back.
+        const words = clean.split(/\s+/);
+        if (words.length > 3) continue;
+        if (words.length > 1 && new Set(words.map((w) => w.toLowerCase())).size < words.length) continue;
         counts.set(clean, (counts.get(clean) ?? 0) + 1);
       }
     }

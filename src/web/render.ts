@@ -393,7 +393,17 @@ export function renderEvent(d: any, viewer?: { csrf: string; following: boolean;
 
       <div class="panel" style="margin-bottom:14px">
         <h3>Eventos relacionados</h3>
-        ${d.related.length ? `<ul class="clean">${d.related.map((r: any) => `<li class="small"><a href="/event/${esc(r.id)}/${esc(r.slug)}">${esc(r.title)}</a><br><span class="dim mono">${esc(r.category)} · ${esc(r.country ?? '—')}</span></li>`).join('')}</ul>` : '<p class="small dim">Nenhum evento relacionado publicado.</p>'}
+        ${d.related.length ? `
+          <p class="small dim">Relações detectadas a partir de evidência partilhada. Cada ligação indica o tipo e a razão. Co-ocorrência não implica causalidade.</p>
+          <ul class="clean">${d.related.map((r: any) => `<li style="padding:9px 0;border-bottom:1px solid var(--line)">
+            <div class="chips" style="margin-bottom:4px">
+              <span class="chip cat">${esc(r.kind_label ?? r.kind)}</span>
+              <span class="chip">força ${esc(r.strength)}</span>
+            </div>
+            <a href="/event/${esc(r.id)}/${esc(r.slug)}" class="small"><strong>${esc(r.title)}</strong></a>
+            <div class="small dim" style="margin-top:3px">${esc(r.basis)}</div>
+          </li>`).join('')}</ul>`
+        : '<p class="small dim">Nenhuma relação com evidência partilhada foi detectada. Não são apresentadas ligações especulativas.</p>'}
       </div>
 
       <div class="panel">

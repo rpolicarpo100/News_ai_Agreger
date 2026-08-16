@@ -305,3 +305,20 @@ CREATE TABLE IF NOT EXISTS bookmark (
   UNIQUE (user_id, event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bookmark_user ON bookmark(user_id, created_at DESC);
+
+-- ---------------------------------------------------------------- EVENT GRAPH (§29)
+-- Typed, evidenced relations between events. Every edge records WHY it exists,
+-- so a relation can be inspected and disputed like any other claim.
+CREATE TABLE IF NOT EXISTS event_relation (
+  id          BIGSERIAL PRIMARY KEY,
+  from_event  TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+  to_event    TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,   -- same_location | same_actor | same_topic | temporal_sequence | cross_domain_impact
+  strength    INTEGER NOT NULL,-- 0..100, computed from the evidence below
+  basis       TEXT NOT NULL,   -- human-readable explanation of the shared evidence
+  detected_by TEXT NOT NULL,   -- graph_agent | admin
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (from_event, to_event, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_relation_from ON event_relation(from_event, strength DESC);
+CREATE INDEX IF NOT EXISTS idx_relation_to   ON event_relation(to_event, strength DESC);

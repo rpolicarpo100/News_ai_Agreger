@@ -20,7 +20,7 @@ const { confidence, relevance, lifeImpact, trending, scoreEvent } = await import
 const { freshness } = await import('../src/pipeline/freshness.js');
 const { recordView, sessionHash } = await import('../src/pipeline/views.js');
 const { processEvent } = await import('../src/agents/orchestrator.js');
-const { contradictionAgent, verificationAgent } = await import('../src/agents/specialists.js');
+const { contradictionAgent, verificationAgent, entityAgent } = await import('../src/agents/specialists.js');
 const { findTestData } = await import('../src/core/testguard.js');
 const { articleId, eventId, contentHash } = await import('../src/core/ids.js');
 
@@ -590,4 +590,145 @@ test('disabled accounts cannot authenticate or resolve sessions', async () => {
   await db.query(`UPDATE app_user SET disabled=TRUE WHERE id=$1`, [user!.id]);
   assert.equal(await users.authenticate('disabled@example.org', 'a-strong-enough-passphrase'), null);
   assert.equal(await users.resolveSession(sess.cookie), null);
+});
+
+// ---------------------------------------------------------------- event graph (§29)
+const graph = await import('../src/pipeline/graph.js');
+
+function gEvent(o: Partial<any>): any {
+  return {
+    id: 'E', title: 'T', category: 'general_news', country: null, place: null,
+    lat: null, lon: null, geo_precision: 'exact', first_seen_at: new Date().toISOString(),
+    last_activity_at: new Date().toISOString(), entities: [], ...o,
+  };
+}
+
+test('graph links nearby events and scores closeness', () => {
+  const now = new Date().toISOString();
+  const a = gEvent({ id: 'A', lat: 38.72, lon: -9.14, last_activity_at: now });
+  const b = gEvent({ id: 'B', lat: 38.75, lon: -9.15, last_activity_at: now });
+  const rels = graph.relate(a, b);
+  const loc = rels.find((r) => r.kind === 'same_location');
+  assert.ok(loc, 'nearby events must be linked');
+  assert.ok(loc!.strength > 80, 'very close events score high');
+  assert.match(loc!.basis, /km/);
+});
+
+test('graph does NOT link distant events', () => {
+  const a = gEvent({ id: 'A', lat: 38.7, lon: -9.1 });
+  const b = gEvent({ id: 'B', lat: -33.9, lon: 151.2 }); // Sydney
+  assert.equal(graph.relate(a, b).some((r) => r.kind === 'same_location'), false);
+});
+
+test('shared entities create an evidenced same_actor edge', () => {
+  const a = gEvent({ id: 'A', entities: ['Banco Central Europeu', 'Christine Lagarde', 'Frankfurt'] });
+  const b = gEvent({ id: 'B', entities: ['Christine Lagarde', 'Banco Central Europeu'] });
+  const rel = graph.relate(a, b).find((r) => r.kind === 'same_actor');
+  assert.ok(rel);
+  assert.match(rel!.basis, /Christine Lagarde/);
+});
+
+test('a single shared entity is not enough for an edge', () => {
+  const a = gEvent({ id: 'A', entities: ['Lisboa', 'Outra Coisa'] });
+  const b = gEvent({ id: 'B', entities: ['Lisboa'] });
+  assert.equal(graph.relate(a, b).some((r) => r.kind === 'same_actor'), false);
+});
+
+test('cross-domain edges require same country AND a tight window, and disclaim causation', () => {
+  const now = Date.now();
+  const war = gEvent({ id: 'W', category: 'war_conflict', country: 'UA', last_activity_at: new Date(now).toISOString() });
+  const energy = gEvent({ id: 'E', category: 'energy', country: 'UA', last_activity_at: new Date(now - 6 * 3600e3).toISOString() });
+  const rel = graph.relate(war, energy).find((r) => r.kind === 'cross_domain_impact');
+  assert.ok(rel, 'linked domains in the same country and window must connect');
+  assert.match(rel!.basis, /não.*causal/i, 'must explicitly disclaim causation');
+
+  // Different countries: no edge.
+  const far = gEvent({ id: 'F', category: 'energy', country: 'JP', last_activity_at: new Date(now).toISOString() });
+  assert.equal(graph.relate(war, far).some((r) => r.kind === 'cross_domain_impact'), false);
+
+  // Same country but far apart in time: no edge.
+  const old = gEvent({ id: 'O', category: 'energy', country: 'UA', last_activity_at: new Date(now - 200 * 3600e3).toISOString() });
+  assert.equal(graph.relate(war, old).some((r) => r.kind === 'cross_domain_impact'), false);
+});
+
+test('unrelated events in unlinked domains produce no edges at all', () => {
+  const a = gEvent({ id: 'A', category: 'sports', country: 'PT', title: 'Resultado do campeonato de futebol' });
+  const b = gEvent({ id: 'B', category: 'space', country: 'US', title: 'Telescope observes distant galaxy' });
+  assert.deepEqual(graph.relate(a, b), [], 'no shared evidence must mean no relation');
+});
+
+test('buildGraph persists edges and relatedEvents reads them back', async () => {
+  const r = await graph.buildGraph(80);
+  assert.ok(r.examined > 0);
+  const edges = await db.query<any>(`SELECT COUNT(*)::int AS n FROM event_relation`);
+  if (Number(edges[0].n) > 0) {
+    const [any] = await db.query<any>(`SELECT from_event FROM event_relation LIMIT 1`);
+    const rel = await graph.relatedEvents(any.from_event, 5);
+    assert.ok(rel.length > 0);
+    assert.ok(rel[0].basis, 'every edge must carry its basis');
+    assert.ok(rel[0].kind_label, 'every edge must carry a readable label');
+    assert.ok(rel[0].strength >= 0 && rel[0].strength <= 100);
+  }
+});
+
+test('every stored relation has a basis and a valid strength', async () => {
+  const bad = await db.query<any>(
+    `SELECT COUNT(*)::int AS n FROM event_relation
+     WHERE basis IS NULL OR basis='' OR strength < 0 OR strength > 100`);
+  assert.equal(Number(bad[0].n), 0);
+});
+
+test('approximate coordinates never produce a false "0 km" relation', () => {
+  // Regression: gazetteer country centroids are identical for every event in a
+  // country, so measuring between them claimed "0 km apart" with strength 95.
+  const now = new Date().toISOString();
+  const a = gEvent({ id: 'A', lat: 39.5, lon: -8.0, geo_precision: 'approximate', country: 'PT', place: null, last_activity_at: now });
+  const b = gEvent({ id: 'B', lat: 39.5, lon: -8.0, geo_precision: 'approximate', country: 'PT', place: null, last_activity_at: now });
+  const loc = graph.relate(a, b).find((r) => r.kind === 'same_location');
+  assert.equal(loc, undefined, 'centroid-to-centroid distance must not become a location claim');
+});
+
+test('two approximate events at the same named place link weakly and say so', () => {
+  const a = gEvent({ id: 'A', geo_precision: 'approximate', country: 'PT', place: 'Lisboa', lat: 38.7, lon: -9.1 });
+  const b = gEvent({ id: 'B', geo_precision: 'approximate', country: 'PT', place: 'Lisboa', lat: 38.7, lon: -9.1 });
+  const loc = graph.relate(a, b).find((r) => r.kind === 'same_location');
+  assert.ok(loc);
+  assert.ok(loc!.strength < 60, 'approximate matches must score lower than reported coordinates');
+  assert.match(loc!.basis, /aproximada/i);
+});
+
+test('entity extraction rejects navigation chrome and repeated words', async () => {
+  // Regression: NASA's APOD feed produced "entities" like
+  // "Today's APOD Archive Submissions" and "APOD Science APOD APOD",
+  // which then linked unrelated astronomy pictures as sharing an actor.
+  const ctx = {
+    eventId: 'X', event: {} as any,
+    articles: [1, 2].map((i) => ({
+      id: `a${i}`, source_id: 's', source_name: 'NASA', publisher_group: 'nasa',
+      origin_type: 'official', reliability_score: 96, url: `https://apod.test/${i}`,
+      title: 'APOD Science APOD APOD Today Archive Submissions Index Search',
+      summary: 'Astronomy Picture of the Day', published_at: null, category: 'space',
+      lat: null, lon: null, payload: '{}',
+    })),
+  } as any;
+  const res = await entityAgent.run(ctx);
+  const names: string[] = res.status === 'ok' ? (res.output as any).entities.map((e: any) => e.name) : [];
+  assert.ok(!names.some((n) => n.split(/\s+/).length > 3), 'no entity may span more than 3 words');
+  assert.ok(!names.some((n) => { const w = n.toLowerCase().split(/\s+/); return w.length > 1 && new Set(w).size < w.length; }),
+    'no entity may repeat the same word');
+});
+
+test('same_actor requires specific names, not feed furniture', () => {
+  // Two unrelated Indonesian earthquakes share "Depth", "UTC", "MMI" — none of
+  // which is an actor. They must not be linked on that basis.
+  const a = gEvent({ id: 'A', entities: ['Depth', 'UTC', 'MMI'], category: 'natural_events' });
+  const b = gEvent({ id: 'B', entities: ['Depth', 'UTC', 'MMI IV'], category: 'natural_events' });
+  const rel = graph.relate(a, b, { commonEntities: new Set(['depth', 'utc', 'mmi']) })
+    .find((r) => r.kind === 'same_actor');
+  assert.equal(rel, undefined);
+
+  // Real named actors still link.
+  const c = gEvent({ id: 'C', entities: ['Donald Trump', 'Iran', 'Hormuz'] });
+  const d = gEvent({ id: 'D', entities: ['Donald Trump', 'Iran'] });
+  assert.ok(graph.relate(c, d, {}).find((r) => r.kind === 'same_actor'));
 });
