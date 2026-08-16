@@ -1,0 +1,39 @@
+{
+  "name": "global-news-intelligence",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json && cp src/db/schema.sql dist/db/schema.sql",
+    "worker": "node dist/worker.js",
+    "worker:once": "tsx src/worker.ts --once",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts",
+    "check:testdata": "tsx scripts/check-no-test-data.ts",
+    "check:secrets": "tsx scripts/check-secrets.ts",
+    "gate": "npm run check:secrets && npm run check:testdata && npm run typecheck && npm test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Event-first news intelligence platform: real sources, provenance, verification, explainable scoring, full audit trail.",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.5",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.21.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.2"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}

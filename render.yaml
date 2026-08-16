@@ -1,0 +1,55 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+# Deploy: push to GitHub, then Render → New → Blueprint → select this repo.
+databases:
+  - name: gni-db
+    databaseName: gni
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  # ---------------------------------------------------------------- web
+  - type: web
+    name: gni-web
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gni-db
+          property: connectionString
+      - key: VIEW_SALT          # rotates view-session hashing; never logged
+        generateValue: true
+      - key: ADMIN_TOKEN        # bearer token for /api/admin/*
+        generateValue: true
+      - key: PUBLIC_BASE_URL    # set to your Render URL for correct canonicals/sitemap
+        sync: false
+      - key: RUN_WORKER_IN_WEB  # 'false' when running the separate worker service
+        value: "true"
+      - key: CYCLE_MINUTES
+        value: "10"
+
+  # ---------------------------------------------------------------- worker
+  # Free Render plans allow one service; enable this on a paid plan and set
+  # RUN_WORKER_IN_WEB=false on the web service to separate ingestion from serving.
+  - type: worker
+    name: gni-worker
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm run worker
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gni-db
+          property: connectionString
+      - key: CYCLE_MINUTES
+        value: "10"

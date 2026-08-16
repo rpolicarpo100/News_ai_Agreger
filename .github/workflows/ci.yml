@@ -1,0 +1,28 @@
+name: Quality Gate
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - run: npm ci
+
+      # Order mirrors docs/ARCHITECTURE.md §Quality Gates.
+      # Any failure blocks the deployment.
+      - name: Secrets scan
+        run: npm run check:secrets
+      - name: Test-data scan
+        run: npm run check:testdata
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit + integration tests
+        run: npm test
+      - name: Build
+        run: npm run build
