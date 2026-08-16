@@ -150,7 +150,7 @@ ${o.jsonLd ? `<script type="application/ld+json">${JSON.stringify(o.jsonLd).repl
 <footer><div class="wrap">
   <p><strong>Global News Intelligence</strong> — dados reais, fontes reais, eventos reais, rastreabilidade completa.</p>
   <p class="dim">Esta plataforma não inventa acontecimentos. Quando não existem dados verificados, mostra <span class="mono">NO VERIFIED DATA AVAILABLE</span>. Quando as fontes divergem, mostra o conflito. Quando um score não pode ser calculado, mostra <span class="mono">N/A</span>.</p>
-  <p><a href="/about">Metodologia</a> · <a href="/status">Estado do sistema</a> · <a href="/api/events">API</a> · <a href="/support">☕ Apoiar</a> · <a href="/sitemap.xml">Sitemap</a></p>
+  <p><a href="/about">Metodologia</a> · <a href="/status">Estado do sistema</a> · <a href="/api/events">API</a> · <a href="/support" style="color:var(--acc)">☕ Pay for a coffee</a> · <a href="/sitemap.xml">Sitemap</a></p>
 </div></footer></body></html>`;
 }
 
@@ -501,11 +501,99 @@ export function renderAbout(): string {
   </div>`);
 }
 
-export function renderSupport(): string {
-  return layout({ title: 'Apoiar', current: '/support' }, `<h1>☕ Pay for a coffee</h1>
-  <div class="panel" style="margin-top:16px">
-    <p class="small">Ainda não estão configurados dados de pagamento nesta instalação.</p>
-    <div class="empty"><strong>NO PAYMENT DETAILS CONFIGURED</strong>Revolut e endereço Ethereum serão apresentados aqui quando forem fornecidos pelo operador e definidos em variáveis de ambiente. Nenhum endereço é inventado.</div>
-    <p class="small dim">Donativos nunca influenciam ranking, visibilidade, relevance, confidence, trending ou decisões editoriais.</p>
-  </div>`);
+const SUPPORT_CSS = `
+.pay{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-top:16px}
+.pay .card2{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;
+  display:flex;flex-direction:column;gap:12px}
+.pay h3{margin:0;font-size:16px;display:flex;align-items:center;gap:8px}
+.qr{background:#fff;border-radius:10px;padding:10px;align-self:center;line-height:0}
+.addr{display:flex;gap:8px;align-items:stretch}
+.addr code{flex:1;background:var(--bg2);border:1px solid var(--line2);border-radius:8px;
+  padding:9px 11px;font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--txt);line-height:1.45}
+.copy{background:var(--bg2);border:1px solid var(--line2);color:var(--muted);border-radius:8px;
+  padding:0 13px;font-size:12px;font-family:var(--mono);cursor:pointer;white-space:nowrap}
+.copy:hover{border-color:var(--acc);color:var(--acc)}
+.paylink{display:inline-block;background:var(--acc);color:#07090d;border-radius:8px;padding:10px 16px;
+  font-weight:700;font-size:14px;text-align:center}
+.paylink:hover{opacity:.9}
+.verified{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--acc);
+  border:1px solid rgba(61,220,151,.35);border-radius:5px;padding:2px 7px}
+`;
+
+export function renderSupport(cfg: {
+  configured: boolean;
+  methods: Array<{ id: string; label: string; value: string; href?: string; note: string; qrSvg: string; problem?: string }>;
+  problems: string[];
+}): string {
+  const cards = cfg.methods.map((m) => `
+    <div class="card2">
+      <h3>${m.id === 'revolut' ? '💳' : 'Ξ'} ${esc(m.label)}
+        ${m.id === 'ethereum' && !m.problem ? '<span class="verified" title="Checksum EIP-55 verificado">EIP-55 ✓</span>' : ''}
+      </h3>
+      <div class="qr">${m.qrSvg}</div>
+      ${m.href
+        ? `<a class="paylink" href="${esc(m.href)}" target="_blank" rel="noopener">Abrir ${esc(m.label)} →</a>`
+        : ''}
+      <div class="addr">
+        <code id="val-${esc(m.id)}">${esc(m.value)}</code>
+        <button class="copy" type="button" data-copy="${esc(m.id)}">Copiar</button>
+      </div>
+      <p class="small dim" style="margin:0">${esc(m.note)}</p>
+      ${m.problem ? `<p class="small warnc" style="margin:0">Nota: ${esc(m.problem)}</p>` : ''}
+    </div>`).join('');
+
+  const body = cfg.configured
+    ? `<div class="pay">${cards}</div>`
+    : `<div class="empty" style="margin-top:16px"><strong>NO PAYMENT DETAILS CONFIGURED</strong>Nenhum método de pagamento válido está configurado nesta instalação. Nenhum endereço é inventado.</div>`;
+
+  return layout({
+    title: 'Apoiar',
+    current: '/support',
+    extraCss: SUPPORT_CSS,
+    description: 'Apoie o Global News Intelligence. Os donativos não influenciam ranking, relevância, confiança nem decisões editoriais.',
+  }, `<h1>☕ Pay for a coffee</h1>
+  <p class="small dim" style="max-width:62ch">Esta plataforma não tem publicidade, não vende dados e não aceita conteúdo patrocinado. Se lhe for útil, pode contribuir para os custos de infraestrutura.</p>
+
+  ${cfg.problems.length ? `<div class="empty" style="margin-top:14px;border-color:rgba(255,93,108,.4);color:var(--bad)">
+    <strong>MÉTODO DE PAGAMENTO REJEITADO</strong>
+    ${cfg.problems.map((p) => esc(p)).join('<br>')}
+  </div>` : ''}
+
+  ${body}
+
+  <h2 class="sec">Independência</h2>
+  <div class="panel">
+    <p class="small" style="margin-top:0">Um donativo <strong>não</strong> influencia:</p>
+    <ul class="clean small" style="margin-bottom:12px">
+      <li>• ranking, visibilidade ou ordenação de eventos;</li>
+      <li>• relevance, confidence, life impact, trending ou qualquer score;</li>
+      <li>• o que é publicado, verificado ou apresentado como facto;</li>
+      <li>• a fila de revisão humana ou as decisões editoriais.</li>
+    </ul>
+    <p class="small dim" style="margin:0">Isto não é apenas uma política: no código, nenhum módulo de scoring, ranking ou publicação importa ou consegue aceder à configuração de pagamentos. Não existe caminho técnico entre um donativo e o que vê no site.</p>
+  </div>
+
+  <h2 class="sec">Antes de enviar</h2>
+  <div class="panel">
+    <ul class="clean small" style="margin:0">
+      <li>• <strong>Verifique o endereço.</strong> Compare os primeiros e últimos caracteres com os apresentados acima. Transacções em blockchain são irreversíveis.</li>
+      <li>• <strong>Verifique a rede.</strong> O endereço Ethereum é para a mainnet. Fundos enviados noutra rede podem perder-se.</li>
+      <li>• Os QR codes são gerados neste servidor, não por um serviço externo, e o endereço Ethereum é validado pelo checksum EIP-55 antes de ser apresentado.</li>
+      <li>• Não é emitido recibo nem factura. Isto é um donativo, não uma compra.</li>
+    </ul>
+  </div>
+
+  <script>
+  document.querySelectorAll('.copy').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var el = document.getElementById('val-' + b.dataset.copy);
+      if (!el) return;
+      var text = el.textContent || '';
+      var done = function () { var o = b.textContent; b.textContent = 'Copiado ✓'; setTimeout(function () { b.textContent = o; }, 1600); };
+      if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done); }
+      else { var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select();
+             try { document.execCommand('copy'); done(); } finally { document.body.removeChild(t); } }
+    });
+  });
+  </script>`);
 }

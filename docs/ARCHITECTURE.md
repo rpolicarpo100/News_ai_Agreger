@@ -183,10 +183,22 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 | 76–78 | Quality gates, testing | Built: 33 tests + CI |
 | 79 | Information quality gate | Built |
 | 80–82 | Analytics, retention, growth | Real counters only; no fake engagement |
-| 83–84 | Support / independence | Shows `NO PAYMENT DETAILS CONFIGURED`; donations cannot affect ranking (no such code path exists) |
+| 83–84 | Support / independence | Built: verified Revolut link + EIP-55-checked ETH address, locally-rendered QR codes, copy buttons. Independence enforced by an executable test asserting no scoring/ranking module can import payment config |
 | 85 | Future architecture | Interfaces prepared |
 | 86 | Phases | Phases 1–3 complete; 4 largely complete; 5 substantially complete |
 | 87–92 | Definition of done, philosophy | Data/intelligence/trust/security/quality met for the built surface |
+
+---
+
+## 5b. Payment details
+
+Three rules govern `/support`:
+
+1. **Never display unverified payment data.** §83 says never invent it; the corollary is never to show what has not been checked. The Ethereum address is validated against its EIP-55 checksum at render time. Failure means the method is withheld and the problem surfaced, not silently shown.
+2. **Never involve a third party.** QR codes are encoded and rendered to inline SVG in-process. Sending a recipient address to an external image API would leak it and create a tampering surface on the money path.
+3. **Never let money touch editorial.** §84 is enforced by a test that reads the source of every scoring, clustering, graph and agent module and asserts none imports the support config or reads `SUPPORT_*` environment variables.
+
+A hand-written QR encoder was built first and discarded: it produced correctly-sized matrices whose modules disagreed with the reference implementation. An unscannable payment QR is worse than a dependency, so it was replaced with `qrcode-generator` (zero transitive dependencies) and verified module-for-module against Python's `qrcode`. Keccak-256, by contrast, was kept in-house — 70 lines, verified against the known-answer and all four EIP-55 vectors — because it removes a supply-chain dependency from the code path that validates the address.
 
 ---
 

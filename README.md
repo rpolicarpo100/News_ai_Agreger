@@ -159,6 +159,16 @@ The orchestrator selects only relevant agents (an earthquake does not run the cr
 
 `/admin`, `/api/admin`, `/my` and `/account` are excluded from `robots.txt`.
 
+## Support (§83, §84)
+
+`/support` shows real, verified payment details: a Revolut link and an Ethereum address, each with a locally-generated QR code and a copy button.
+
+The Ethereum address is validated against its **EIP-55 checksum** before it is ever displayed. An address that fails is refused and reported as a problem rather than shown, because a single mistyped hex digit sends funds nowhere recoverable. The checksum implementation is verified against the four reference vectors in the EIP itself, and its keccak-256 against the known-answer vector.
+
+QR codes are rendered to inline SVG on this server. A payment QR is never fetched from a third-party image service: that would leak the recipient address and add a tampering surface to the one code path handling money. Output is verified module-for-module against Python's `qrcode` reference library.
+
+§84 independence is enforced as an **executable test**, not a promise: it asserts that no scoring, clustering, graph, orchestrator or agent module imports the payment configuration or reads its environment variables. There is no technical path from a donation to what appears on the site.
+
 ## API
 
 ```
@@ -190,7 +200,7 @@ Every admin action is written to `audit_log` with actor, before state, after sta
 
 ## Testing
 
-63 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
+76 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, EIP-55 validation, QR correctness, donation independence, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
 
 ```bash
 npm run gate   # the full pre-deploy sequence; any failure blocks deployment
@@ -206,7 +216,7 @@ CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 Also built: the Admin Control Center (§68, §69, §41) and accounts with My Intelligence (§56, §71).
 
-**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess. Payment details show `NO PAYMENT DETAILS CONFIGURED` until you supply real ones. Alerts and the daily brief are next: the follow graph they depend on now exists, but a notification system with no delivery channel configured would be a button that does nothing.
+**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess. Alerts and the daily brief are next: the follow graph they depend on now exists, but a notification system with no delivery channel configured would be a button that does nothing.
 
 See `docs/ARCHITECTURE.md` for the full section-by-section mapping and the roadmap.
 

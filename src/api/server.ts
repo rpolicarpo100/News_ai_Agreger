@@ -29,6 +29,8 @@ import {
   FOLLOW_KINDS, SESSION_DAYS, type FollowKind,
 } from '../core/users.js';
 import { parseCookies } from './session.js';
+import { loadSupportConfig } from '../core/support.js';
+import { qrSvg } from '../core/qr.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -407,7 +409,17 @@ app.get('/search', async (req, res) => {
 });
 app.get('/status', async (_req, res) => res.type('html').send(renderStatus(await systemStatus())));
 app.get('/about', async (_req, res) => res.type('html').send(renderAbout()));
-app.get('/support', async (_req, res) => res.type('html').send(renderSupport()));
+app.get('/support', async (_req, res) => {
+  const cfg = loadSupportConfig();
+  res.type('html').send(renderSupport({
+    configured: cfg.configured,
+    problems: cfg.problems,
+    methods: cfg.methods.map((m) => ({
+      id: m.id, label: m.label, value: m.value, href: m.href, note: m.note, problem: m.problem,
+      qrSvg: qrSvg(m.qrPayload, { size: 190, label: `Código QR para ${m.label}` }),
+    })),
+  }));
+});
 
 // ---------------------------------------------------------------- SEO
 app.get('/robots.txt', (_req, res) => {

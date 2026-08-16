@@ -732,3 +732,127 @@ test('same_actor requires specific names, not feed furniture', () => {
   const d = gEvent({ id: 'D', entities: ['Donald Trump', 'Iran'] });
   assert.ok(graph.relate(c, d, {}).find((r) => r.kind === 'same_actor'));
 });
+
+// ---------------------------------------------------------------- payments (§83, §84)
+const eth = await import('../src/core/eth.js');
+const qr = await import('../src/core/qr.js');
+const support = await import('../src/core/support.js');
+
+test('keccak-256 matches the known-answer vector', () => {
+  const hex = [...eth.keccak256(new Uint8Array())].map((b) => b.toString(16).padStart(2, '0')).join('');
+  assert.equal(hex, 'c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
+});
+
+test('EIP-55 checksums match the reference vectors from the specification', () => {
+  for (const v of [
+    '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
+    '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
+    '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB',
+    '0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb',
+  ]) {
+    assert.equal(eth.toChecksumAddress(v), v, `checksum mismatch for ${v}`);
+  }
+});
+
+test('the configured donation address passes its EIP-55 checksum', () => {
+  // A typo here sends money nowhere recoverable, so it is asserted, not assumed.
+  const configured = '0x558d60469aC85EBC9679aB67835Fa9657a4B469e';
+  const r = eth.validateEthAddress(configured);
+  assert.equal(r.valid, true, r.reason);
+  assert.equal(r.checksum, configured);
+});
+
+test('a single-character typo in an address is rejected', () => {
+  // Swap one hex digit; the checksum must catch it.
+  const good = '0x558d60469aC85EBC9679aB67835Fa9657a4B469e';
+  const typo = good.slice(0, -1) + (good.endsWith('e') ? 'f' : 'e');
+  const r = eth.validateEthAddress(typo);
+  assert.equal(r.valid, false);
+  assert.match(r.reason!, /checksum/i);
+});
+
+test('malformed addresses are rejected on shape', () => {
+  for (const bad of ['', '0x', 'not-an-address', '0x123', '558d60469aC85EBC9679aB67835Fa9657a4B469e0000']) {
+    assert.equal(eth.validateEthAddress(bad).valid, false, `should reject ${bad}`);
+  }
+});
+
+test('an all-lowercase address is accepted but flagged as unverifiable', () => {
+  const r = eth.validateEthAddress('0x558d60469ac85ebc9679ab67835fa9657a4b469e');
+  assert.equal(r.valid, true);
+  assert.match(r.reason!, /checksum/i, 'operator must be told the typo check could not run');
+});
+
+test('QR encoder produces a valid, correctly-sized matrix', () => {
+  const grid = qr.encodeQr('ethereum:0x558d60469aC85EBC9679aB67835Fa9657a4B469e');
+  assert.equal(grid.length, 33, 'version 4 => 33x33 modules');
+  assert.ok(grid.every((r) => r.length === grid.length), 'matrix must be square');
+  // Finder patterns: dark 7x7 ring in three corners.
+  for (const [r0, c0] of [[0, 0], [0, grid.length - 7], [grid.length - 7, 0]]) {
+    assert.equal(grid[r0][c0], true);
+    assert.equal(grid[r0 + 3][c0 + 3], true, 'finder centre must be dark');
+    assert.equal(grid[r0 + 1][c0 + 1], false, 'finder inner ring must be light');
+  }
+});
+
+test('QR SVG is self-contained with a quiet zone and no external references', () => {
+  const svg = qr.qrSvg('https://revolut.me/infowithgoal', { label: 'teste' });
+  assert.match(svg, /^<svg /);
+  assert.ok(!/https?:\/\/(?!www\.w3\.org)/.test(svg.replace(/aria-label="[^"]*"/, '')),
+    'a payment QR must not load anything from a third party');
+  assert.match(svg, /fill="#ffffff"/, 'light quiet zone required for scanning');
+  assert.match(svg, /role="img"/);
+  // viewBox includes the 4-module quiet zone on each side.
+  const m = svg.match(/viewBox="0 0 (\d+) \1"/);
+  assert.ok(m && Number(m[1]) === qr.encodeQr('https://revolut.me/infowithgoal').length + 8);
+});
+
+test('empty QR payload is refused rather than rendering an empty code', () => {
+  assert.throws(() => qr.encodeQr(''));
+});
+
+test('support config exposes both configured methods with valid payloads', () => {
+  const cfg = support.loadSupportConfig();
+  assert.equal(cfg.configured, true);
+  assert.equal(cfg.problems.length, 0);
+  const revolut = cfg.methods.find((m) => m.id === 'revolut');
+  const ethereum = cfg.methods.find((m) => m.id === 'ethereum');
+  assert.ok(revolut && ethereum);
+  assert.equal(revolut!.href, 'https://revolut.me/infowithgoal');
+  assert.match(ethereum!.qrPayload, /^ethereum:0x[0-9a-fA-F]{40}$/, 'must be an EIP-681 URI');
+  // Both payloads must encode without throwing.
+  for (const m of cfg.methods) assert.ok(qr.encodeQr(m.qrPayload).length > 0);
+});
+
+test('an invalid configured address is refused, not displayed', () => {
+  const prev = process.env.SUPPORT_ETH;
+  process.env.SUPPORT_ETH = '0x558d60469aC85EBC9679aB67835Fa9657a4B469f'; // bad checksum
+  const cfg = support.loadSupportConfig();
+  assert.equal(cfg.methods.some((m) => m.id === 'ethereum'), false, 'must not show a possibly-mistyped address');
+  assert.ok(cfg.problems.some((p) => /Ethereum/i.test(p)));
+  if (prev === undefined) delete process.env.SUPPORT_ETH; else process.env.SUPPORT_ETH = prev;
+});
+
+test('revolut usernames and URLs both normalise to a canonical link', () => {
+  const prev = process.env.SUPPORT_REVOLUT;
+  for (const input of ['infowithgoal', '@infowithgoal', 'revolut.me/infowithgoal', 'https://revolut.me/infowithgoal']) {
+    process.env.SUPPORT_REVOLUT = input;
+    const m = support.loadSupportConfig().methods.find((x) => x.id === 'revolut');
+    assert.equal(m?.href, 'https://revolut.me/infowithgoal', `failed for ${input}`);
+  }
+  process.env.SUPPORT_REVOLUT = 'http://evil.test/phish';
+  const cfg = support.loadSupportConfig();
+  assert.equal(cfg.methods.some((m) => m.id === 'revolut'), false, 'non-revolut links must be refused');
+  if (prev === undefined) delete process.env.SUPPORT_REVOLUT; else process.env.SUPPORT_REVOLUT = prev;
+});
+
+test('donations cannot reach scoring: no scoring module imports support config', async () => {
+  // §84 as an executable check rather than a promise in prose.
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['src/pipeline/scoring.ts', 'src/pipeline/cluster.ts', 'src/pipeline/graph.ts',
+                   'src/agents/orchestrator.ts', 'src/agents/specialists.ts']) {
+    const src = readFileSync(f, 'utf8');
+    assert.ok(!/from '.*core\/support/.test(src), `${f} must not import payment configuration`);
+    assert.ok(!/SUPPORT_(ETH|REVOLUT)/.test(src), `${f} must not read payment environment variables`);
+  }
+});
