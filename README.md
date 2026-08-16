@@ -29,7 +29,7 @@ This is enforced mechanically, not by convention:
 | Source failures are shown, not hidden | `/status` reports `offline` / `degraded` with the real error |
 | Conflicting numbers are displayed, not resolved | `contradictionAgent` → `SOURCE CONFLICT` panel |
 | Copyright | stores title, feed-provided summary and link only — never full text |
-| Privacy | no IP stored; sessions are a salted hash that rotates every 24h |
+| Privacy | no IP stored; view sessions are a salted hash rotating every 24h; accounts store email + scrypt hash only |
 
 If there is no data, the UI says `NO VERIFIED DATA AVAILABLE`. An empty interface is preferable to a false one.
 
@@ -136,6 +136,14 @@ The orchestrator selects only relevant agents (an earthquake does not run the cr
 
 ---
 
+## Admin & accounts
+
+**Admin Control Center** at `/admin` — control center with emergency flags, source health, review queue, event overrides, audit log and security events. Login exchanges the server-side `ADMIN_TOKEN` for an httpOnly signed session cookie; the token never reaches the browser, and rotating it invalidates every live session. Every mutating form carries a CSRF token and requires a written reason, which is stored in the audit trail with before/after state. Failed logins trigger progressive lockout and are recorded as security events. With `ADMIN_TOKEN` unset the entire area returns 503.
+
+**Accounts** at `/account/register` and `/my` — follow categories, countries and individual events; bookmark events; get a personal feed built from real published events only. Data minimisation is the design constraint: an account is an email, a scrypt password hash, and a list of follows. No name, no profile, no behavioural tracking. Session cookies are opaque random tokens stored only as SHA-256, so a database leak yields no usable sessions. `/my/export` returns everything held about the user as JSON; account deletion cascades to sessions, follows and bookmarks (§71).
+
+`/admin`, `/api/admin`, `/my` and `/account` are excluded from `robots.txt`.
+
 ## API
 
 ```
@@ -167,7 +175,7 @@ Every admin action is written to `audit_log` with actor, before state, after sta
 
 ## Testing
 
-33 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps).
+51 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps).
 
 ```bash
 npm run gate   # the full pre-deploy sequence; any failure blocks deployment
@@ -181,7 +189,9 @@ CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 **Built and running:** architecture, data model (23 tables), ingestion, normalization, provenance, event model + lifecycle, agent framework, orchestrator, supervisor, verification, contradiction detection, scoring with transparency, freshness, view system, anti-manipulation, audit trail, AI versioning, emergency controls, security middleware, quality gates, test-data blocking, home dashboard, event pages, map, search, filters, trending, category/country pages, SEO, accessibility, PT-PT UI, testing.
 
-**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess. Payment details show `NO PAYMENT DETAILS CONFIGURED` until you supply real ones. User accounts, alerts and personalization are scaffolded in the schema but not yet exposed — showing an empty "My Intelligence" page would violate the project's own rules.
+Also built: the Admin Control Center (§68, §69, §41) and accounts with My Intelligence (§56, §71).
+
+**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess. Payment details show `NO PAYMENT DETAILS CONFIGURED` until you supply real ones. Alerts and the daily brief are next: the follow graph they depend on now exists, but a notification system with no delivery channel configured would be a button that does nothing.
 
 See `docs/ARCHITECTURE.md` for the full section-by-section mapping and the roadmap.
 

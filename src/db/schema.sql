@@ -262,3 +262,46 @@ CREATE TABLE IF NOT EXISTS system_flag (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by TEXT NOT NULL DEFAULT 'system'
 );
+
+-- ---------------------------------------------------------------- USERS (§56, §71)
+-- Data minimisation: email + password hash only. No name, no profile, no tracking.
+CREATE TABLE IF NOT EXISTS app_user (
+  id            TEXT PRIMARY KEY,          -- USR-<random>
+  email         TEXT NOT NULL UNIQUE,
+  email_lower   TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,             -- scrypt: N$r$p$salt$hash, never plaintext
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ,
+  disabled      BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS user_session (
+  id         TEXT PRIMARY KEY,             -- opaque random token id
+  user_id    TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,                -- sha256 of the cookie secret; raw value never stored
+  csrf       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked    BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_session_user ON user_session(user_id, expires_at);
+
+-- Follows: countries, categories, individual events (§56)
+CREATE TABLE IF NOT EXISTS follow (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,                -- country | category | event
+  value      TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, kind, value)
+);
+CREATE INDEX IF NOT EXISTS idx_follow_user ON follow(user_id);
+
+CREATE TABLE IF NOT EXISTS bookmark (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  event_id   TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bookmark_user ON bookmark(user_id, created_at DESC);

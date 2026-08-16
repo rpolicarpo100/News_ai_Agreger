@@ -108,10 +108,18 @@ const NAV: Array<[string, string]> = [
   ['/', 'Home'], ['/today', 'Hoje'], ['/breaking', 'Breaking'], ['/trending', 'Trending'],
   ['/most-viewed', 'Mais Vistos'], ['/map', 'Mapa'], ['/category/natural_events', 'Naturais'],
   ['/category/war_conflict', 'Conflito'], ['/category/economy', 'Economia'], ['/category/technology', 'Tecnologia'],
-  ['/status', 'Estado'], ['/about', 'Metodologia'],
+  ['/status', 'Estado'], ['/about', 'Metodologia'], ['/my', 'My Intelligence'],
 ];
 
-interface LayoutOpts { title: string; description?: string; current?: string; jsonLd?: object; canonical?: string }
+interface LayoutOpts {
+  title: string; description?: string; current?: string; jsonLd?: object;
+  canonical?: string; extraCss?: string;
+}
+
+/** Shared shell so every page (public, account, admin-adjacent) looks identical. */
+export function pageShell(o: LayoutOpts & { body: string }): string {
+  return layout(o, o.body);
+}
 
 function layout(o: LayoutOpts, body: string): string {
   return `<!doctype html><html lang="pt-PT"><head>
@@ -123,7 +131,7 @@ ${o.canonical ? `<link rel="canonical" href="${esc(o.canonical)}">` : ''}
 <meta property="og:description" content="${esc(o.description ?? 'Inteligência noticiosa verificável.')}">
 <meta property="og:type" content="website"><meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='10' fill='%233ddc97'/></svg>">
-<style>${CSS}</style>
+<style>${CSS}${o.extraCss ?? ''}</style>
 ${o.jsonLd ? `<script type="application/ld+json">${JSON.stringify(o.jsonLd).replace(/</g, '\\u003c')}</script>` : ''}
 </head><body>
 <a href="#main" style="position:absolute;left:-9999px" onfocus="this.style.left='10px';this.style.top='10px';this.style.zIndex='99';this.style.background='#11161f';this.style.padding='8px'">Saltar para o conteúdo</a>
@@ -223,7 +231,7 @@ export function renderList(o: { title: string; events: any[]; note?: string; gro
 }
 
 // ---------------------------------------------------------------- EVENT
-export function renderEvent(d: any): string {
+export function renderEvent(d: any, viewer?: { csrf: string; following: boolean; bookmarked: boolean }): string {
   const e = d.event;
   const score = (k: string) => d.scores.find((s: any) => s.kind === k);
   const val = (k: string) => { const s = score(k); return s ? s.value : null; };
@@ -389,7 +397,26 @@ export function renderEvent(d: any): string {
       </div>
 
       <div class="panel">
-        <h3>Partilhar</h3>
+        <h3>Acompanhar</h3>
+        ${viewer ? `
+          <form method="post" action="/my/follow" style="display:inline">
+            <input type="hidden" name="_csrf" value="${esc(viewer.csrf)}">
+            <input type="hidden" name="kind" value="event">
+            <input type="hidden" name="value" value="${esc(e.id)}">
+            <input type="hidden" name="action" value="${viewer.following ? 'unfollow' : 'follow'}">
+            <button type="submit" style="background:var(--bg2);border:1px solid ${viewer.following ? 'rgba(61,220,151,.45)' : 'var(--line2)'};color:${viewer.following ? 'var(--acc)' : 'var(--muted)'};border-radius:20px;padding:6px 13px;font-size:12px;font-family:var(--mono);cursor:pointer">
+              ${viewer.following ? '✓ A seguir' : '+ Seguir evento'}
+            </button>
+          </form>
+          <form method="post" action="/my/bookmark" style="display:inline">
+            <input type="hidden" name="_csrf" value="${esc(viewer.csrf)}">
+            <input type="hidden" name="event_id" value="${esc(e.id)}">
+            <button type="submit" style="background:var(--bg2);border:1px solid ${viewer.bookmarked ? 'rgba(78,168,255,.45)' : 'var(--line2)'};color:${viewer.bookmarked ? 'var(--acc2)' : 'var(--muted)'};border-radius:20px;padding:6px 13px;font-size:12px;font-family:var(--mono);cursor:pointer">
+              ${viewer.bookmarked ? '✓ Guardado' : '☆ Guardar'}
+            </button>
+          </form>`
+        : `<p class="small dim" style="margin:0"><a href="/account/login?next=${encodeURIComponent(e.url)}">Entre</a> ou <a href="/account/register">crie uma conta</a> para seguir este evento e recebê-lo no seu feed pessoal.</p>`}
+        <h3 style="margin-top:16px">Partilhar</h3>
         <p class="small dim">Ligação canónica deste evento (o ID é permanente mesmo que o título mude):</p>
         <p class="mono small" style="word-break:break-all">${esc(e.url)}</p>
       </div>

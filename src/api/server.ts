@@ -4,7 +4,7 @@
  * Every endpoint returns real rows or an explicit empty/unavailable state.
  * There is no code path in this file that manufactures an event, a score or a view.
  */
-import express, { type Request, type Response } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getDb, migrate } from '../db/index.js';
@@ -15,12 +15,19 @@ import { freshness, relativePt } from '../pipeline/freshness.js';
 import { recordView, viewCounts } from '../pipeline/views.js';
 import { secureHeaders, rateLimit, requireAdmin, clientIp } from './security.js';
 import { allFlags, setFlag, FLAGS, getFlag } from '../core/flags.js';
-import { audit } from '../core/audit.js';
+import { audit, securityEvent } from '../core/audit.js';
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
 import { renderHome, renderEvent, renderList, renderMap, renderAbout, renderSupport, renderStatus } from '../web/render.js';
 import { renderLogin, renderControlCenter, renderAdminSources, renderReviewQueue, renderAdminEvents, renderAudit, renderSecurity } from '../web/admin.js';
 import { requireSession, requireCsrf, issueSession, clearSession, csrfToken, verifyAdminToken, sessionValid } from './session.js';
 import { isLocked, recordFailure, recordSuccess } from './loginguard.js';
+import { renderAuth, renderMyIntelligence } from '../web/account.js';
+import {
+  createUser, authenticate, createSession, resolveSession, revokeSession,
+  listFollows, addFollow, removeFollow, toggleBookmark, exportUserData, deleteUser,
+  FOLLOW_KINDS, SESSION_DAYS, type FollowKind,
+} from '../core/users.js';
+import { parseCookies } from './session.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const app = express();
@@ -345,7 +352,19 @@ app.get(['/event/:id', '/event/:id/:slug'], async (req, res) => {
   const data = await eventDetail(String(req.params.id));
   if (!data) { res.status(404).type('html').send(renderList({ title: 'Evento não encontrado', events: [], note: 'NO VERIFIED DATA AVAILABLE' })); return; }
   await recordView(String(req.params.id), clientIp(req), String(req.headers['user-agent'] ?? ''));
-  res.type('html').send(renderEvent(data));
+
+  // Personalised controls only when a real session exists.
+  const sess = await currentUser(req);
+  let viewer: { csrf: string; following: boolean; bookmarked: boolean } | undefined;
+  if (sess) {
+    const db = await getDb();
+    const [f, b] = await Promise.all([
+      db.query(`SELECT 1 FROM follow WHERE user_id=$1 AND kind='event' AND value=$2`, [sess.user.id, String(req.params.id)]),
+      db.query(`SELECT 1 FROM bookmark WHERE user_id=$1 AND event_id=$2`, [sess.user.id, String(req.params.id)]),
+    ]);
+    viewer = { csrf: sess.csrf, following: f.length > 0, bookmarked: b.length > 0 };
+  }
+  res.type('html').send(renderEvent(data, viewer));
 });
 
 app.get('/category/:cat', async (req, res) => {
@@ -395,7 +414,7 @@ app.get('/support', async (_req, res) => res.type('html').send(renderSupport()))
 // ---------------------------------------------------------------- SEO
 app.get('/robots.txt', (_req, res) => {
   res.type('text').send(
-    `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\nSitemap: ${publicBase()}/sitemap.xml\n`);
+    `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\nDisallow: /my\nDisallow: /account\nSitemap: ${publicBase()}/sitemap.xml\n`);
 });
 app.get('/sitemap.xml', async (_req, res) => {
   const db = await getDb();
@@ -616,6 +635,199 @@ adminForms.post('/pipeline/run', async (req, res) => {
 });
 
 app.use('/admin', adminForms);
+
+// ---------------------------------------------------------------- ACCOUNTS (§56, §71)
+const USER_COOKIE = 'gni_user';
+
+function userCookieAttrs(): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure}`;
+}
+
+async function currentUser(req: Request) {
+  return resolveSession(parseCookies(req)[USER_COOKIE]);
+}
+
+const account = express.Router();
+account.use(express.urlencoded({ extended: false, limit: '16kb' }));
+
+account.get('/login', async (req, res) => {
+  if (await currentUser(req)) { res.redirect(302, '/my'); return; }
+  res.type('html').send(renderAuth('login', {
+    next: String(req.query.next ?? '/my'),
+    error: req.query.err ? String(req.query.err).slice(0, 200) : undefined,
+    ok: req.query.ok ? String(req.query.ok).slice(0, 200) : undefined,
+  }));
+});
+
+account.get('/register', async (req, res) => {
+  if (await currentUser(req)) { res.redirect(302, '/my'); return; }
+  res.type('html').send(renderAuth('register', {
+    next: String(req.query.next ?? '/my'),
+    error: req.query.err ? String(req.query.err).slice(0, 200) : undefined,
+  }));
+});
+
+account.post('/register', rateLimit(10, 60_000), async (req, res) => {
+  const { email, password } = req.body ?? {};
+  const out = await createUser(String(email ?? ''), String(password ?? ''));
+  if (out.error || !out.user) {
+    res.status(400).type('html').send(renderAuth('register', { error: out.error }));
+    return;
+  }
+  const sess = await createSession(out.user.id);
+  res.append('Set-Cookie', `${USER_COOKIE}=${sess.cookie}; ${userCookieAttrs()}`);
+  res.redirect(302, '/my');
+});
+
+account.post('/login', rateLimit(20, 60_000), async (req, res) => {
+  const { email, password } = req.body ?? {};
+  const user = await authenticate(String(email ?? ''), String(password ?? ''));
+  if (!user) {
+    // Same message for unknown email and wrong password: no account enumeration.
+    await securityEvent('user_login_failed', 'low', { ip: clientIp(req) });
+    res.status(401).type('html').send(renderAuth('login', { error: 'Email ou palavra-passe incorrectos.' }));
+    return;
+  }
+  const sess = await createSession(user.id);
+  res.append('Set-Cookie', `${USER_COOKIE}=${sess.cookie}; ${userCookieAttrs()}`);
+  const next = String((req.body ?? {}).next ?? '/my');
+  res.redirect(302, next.startsWith('/') && !next.startsWith('//') ? next : '/my');
+});
+
+account.post('/logout', async (req, res) => {
+  await revokeSession(parseCookies(req)[USER_COOKIE]);
+  res.append('Set-Cookie', `${USER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  res.redirect(302, '/');
+});
+
+app.use('/account', account);
+
+// ---- My Intelligence ----
+const my = express.Router();
+my.use(express.urlencoded({ extended: false, limit: '16kb' }));
+
+my.use(async (req, res, next) => {
+  const sess = await currentUser(req);
+  if (!sess) { res.redirect(302, `/account/login?next=${encodeURIComponent(req.originalUrl)}`); return; }
+  (req as any).session = sess;
+  next();
+});
+
+/** Double-submit CSRF for personal mutations. */
+function myCsrf(req: Request, res: Response, next: NextFunction): void {
+  const expected = (req as any).session.csrf as string;
+  const given = String((req.body ?? {})._csrf ?? '');
+  if (!expected || given !== expected) {
+    void securityEvent('user_csrf_failed', 'medium', { ip: clientIp(req), path: req.path });
+    res.status(403).type('html').send('<p>Validação CSRF falhou. Recarregue a página.</p>');
+    return;
+  }
+  next();
+}
+
+my.get('/', async (req, res) => {
+  const db = await getDb();
+  const { user, csrf } = (req as any).session;
+  const follows = await listFollows(user.id);
+
+  const cats = follows.filter((f: any) => f.kind === 'category').map((f: any) => f.value);
+  const countries = follows.filter((f: any) => f.kind === 'country').map((f: any) => f.value);
+  const evIds = follows.filter((f: any) => f.kind === 'event').map((f: any) => f.value);
+
+  // Personal feed: real query, empty when nothing matches.
+  let events: any[] = [];
+  if (cats.length || countries.length || evIds.length) {
+    events = await db.query<any>(
+      `SELECT e.*, sc.relevance, sc.confidence, sc.life_impact, sc.trending,
+              COALESCE(vw.total,0) AS views_total
+       FROM event e
+       LEFT JOIN LATERAL (
+         SELECT MAX(value) FILTER (WHERE kind='relevance') AS relevance,
+                MAX(value) FILTER (WHERE kind='confidence') AS confidence,
+                MAX(value) FILTER (WHERE kind='life_impact') AS life_impact,
+                MAX(value) FILTER (WHERE kind='trending') AS trending
+         FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id ORDER BY kind, computed_at DESC) s
+       ) sc ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*) FILTER (WHERE counted) AS total FROM event_view WHERE event_id=e.id
+       ) vw ON TRUE
+       WHERE e.status='PUBLISHED'
+         AND (e.category = ANY($1) OR e.country = ANY($2) OR e.id = ANY($3))
+       ORDER BY e.last_activity_at DESC LIMIT 40`,
+      [cats, countries, evIds]);
+  }
+
+  const bookmarks = await db.query<any>(
+    `SELECT e.*, sc.relevance, sc.confidence, sc.life_impact, sc.trending,
+            COALESCE(vw.total,0) AS views_total
+     FROM bookmark b JOIN event e ON e.id=b.event_id
+     LEFT JOIN LATERAL (
+       SELECT MAX(value) FILTER (WHERE kind='relevance') AS relevance,
+              MAX(value) FILTER (WHERE kind='confidence') AS confidence,
+              MAX(value) FILTER (WHERE kind='life_impact') AS life_impact,
+              MAX(value) FILTER (WHERE kind='trending') AS trending
+       FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id ORDER BY kind, computed_at DESC) s
+     ) sc ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) FILTER (WHERE counted) AS total FROM event_view WHERE event_id=e.id
+     ) vw ON TRUE
+     WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 30`, [user.id]);
+
+  // Only offer countries that actually have published events.
+  const countryOpts = await db.query<any>(
+    `SELECT country, COUNT(*)::int AS n FROM event
+     WHERE status='PUBLISHED' AND country IS NOT NULL
+     GROUP BY country ORDER BY n DESC LIMIT 30`);
+
+  const flash = req.query.ok ? { kind: 'ok', msg: String(req.query.ok).slice(0, 200) }
+    : req.query.err ? { kind: 'err', msg: String(req.query.err).slice(0, 200) } : undefined;
+
+  res.type('html').send(renderMyIntelligence({
+    user, csrf, follows,
+    events: decorate(events), bookmarks: decorate(bookmarks),
+    countries: countryOpts, flash,
+  }));
+});
+
+my.post('/follow', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  const kind = String((req.body ?? {}).kind ?? '') as FollowKind;
+  const value = String((req.body ?? {}).value ?? '').slice(0, 120);
+  const action = String((req.body ?? {}).action ?? 'follow');
+  if (!FOLLOW_KINDS.includes(kind) || !value) {
+    res.redirect(302, '/my?err=' + encodeURIComponent('Pedido inválido.')); return;
+  }
+  if (action === 'unfollow') await removeFollow(user.id, kind, value);
+  else await addFollow(user.id, kind, value);
+  res.redirect(302, (req.headers.referer ?? '').includes('/event/')
+    ? String(req.headers.referer)
+    : '/my');
+});
+
+my.post('/bookmark', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  const eventId = String((req.body ?? {}).event_id ?? '');
+  if (!eventId) { res.redirect(302, '/my?err=' + encodeURIComponent('Pedido inválido.')); return; }
+  await toggleBookmark(user.id, eventId);
+  res.redirect(302, String(req.headers.referer ?? '/my'));
+});
+
+my.get('/export', async (req, res) => {
+  const { user } = (req as any).session;
+  const data = await exportUserData(user.id);
+  res.setHeader('Content-Disposition', `attachment; filename="gni-dados-${user.id}.json"`);
+  res.type('application/json').send(JSON.stringify(data, null, 2));
+});
+
+my.post('/delete', myCsrf, async (req, res) => {
+  const { user } = (req as any).session;
+  await deleteUser(user.id);
+  res.append('Set-Cookie', `${USER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  res.redirect(302, '/?ok=' + encodeURIComponent('Conta eliminada.'));
+});
+
+app.use('/my', my);
 
 app.use((_req, res) => res.status(404).type('html').send(renderList({ title: '404', events: [], note: 'Página não encontrada.' })));
 

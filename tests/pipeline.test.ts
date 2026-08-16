@@ -482,3 +482,112 @@ test('manual publication always records a state-history entry', async () => {
   assert.equal(latest.to_state, 'PUBLISHED');
   assert.equal(latest.actor, 'admin');
 });
+
+// ---------------------------------------------------------------- accounts (§56, §71)
+const users = await import('../src/core/users.js');
+
+test('passwords are scrypt-hashed, never stored in plaintext', async () => {
+  const hash = await users.hashPassword('correct horse battery staple');
+  assert.ok(hash.startsWith('scrypt$'));
+  assert.ok(!hash.includes('correct horse'));
+  assert.equal(await users.verifyPassword('correct horse battery staple', hash), true);
+  assert.equal(await users.verifyPassword('wrong password here', hash), false);
+});
+
+test('two identical passwords produce different hashes (unique salts)', async () => {
+  const a = await users.hashPassword('same-password-1234');
+  const b = await users.hashPassword('same-password-1234');
+  assert.notEqual(a, b);
+  assert.equal(await users.verifyPassword('same-password-1234', a), true);
+  assert.equal(await users.verifyPassword('same-password-1234', b), true);
+});
+
+test('registration validates email and password strength', async () => {
+  assert.ok((await users.createUser('not-an-email', 'longenoughpassword')).error);
+  assert.ok((await users.createUser('a@b.co', 'short')).error);
+  assert.ok((await users.createUser('a@b.co', 'aaaaaaaaaaaa')).error, 'repeated-char password rejected');
+});
+
+test('account lifecycle: create, authenticate, session, revoke', async () => {
+  const { user, error } = await users.createUser('Reader@Example.org', 'a-strong-enough-passphrase');
+  assert.equal(error, undefined);
+  assert.ok(user!.id.startsWith('USR-'));
+
+  assert.equal(await users.authenticate('reader@example.org', 'wrong-passphrase-xx'), null);
+  const authed = await users.authenticate('READER@example.org', 'a-strong-enough-passphrase');
+  assert.ok(authed, 'email match must be case-insensitive');
+
+  const sess = await users.createSession(authed!.id);
+  const resolved = await users.resolveSession(sess.cookie);
+  assert.equal(resolved!.user.id, authed!.id);
+  assert.equal(await users.resolveSession('bogus.token'), null);
+
+  await users.revokeSession(sess.cookie);
+  assert.equal(await users.resolveSession(sess.cookie), null, 'revoked session must not resolve');
+});
+
+test('duplicate registration is refused', async () => {
+  await users.createUser('dupe@example.org', 'a-strong-enough-passphrase');
+  const second = await users.createUser('DUPE@example.org', 'another-strong-passphrase');
+  assert.ok(second.error);
+});
+
+test('session tokens are stored only as hashes', async () => {
+  const { user } = await users.createUser('hash@example.org', 'a-strong-enough-passphrase');
+  const sess = await users.createSession(user!.id);
+  const secret = sess.cookie.split('.')[1];
+  const rows = await db.query<any>(`SELECT token_hash FROM user_session WHERE user_id=$1`, [user!.id]);
+  assert.ok(rows.length);
+  assert.notEqual(rows[0].token_hash, secret, 'raw session secret must never be stored');
+  assert.match(rows[0].token_hash, /^[0-9a-f]{64}$/);
+});
+
+test('follows and bookmarks round-trip and are idempotent', async () => {
+  const { user } = await users.createUser('follow@example.org', 'a-strong-enough-passphrase');
+  await users.addFollow(user!.id, 'category', 'natural_events');
+  await users.addFollow(user!.id, 'category', 'natural_events'); // duplicate
+  await users.addFollow(user!.id, 'country', 'PT');
+  const list = await users.listFollows(user!.id);
+  assert.equal(list.length, 2, 'duplicate follow must not create a second row');
+
+  await users.removeFollow(user!.id, 'country', 'PT');
+  assert.equal((await users.listFollows(user!.id)).length, 1);
+
+  const [ev] = await db.query<any>(`SELECT id FROM event LIMIT 1`);
+  assert.equal(await users.toggleBookmark(user!.id, ev.id), true);
+  assert.equal(await users.toggleBookmark(user!.id, ev.id), false, 'toggling twice must remove it');
+});
+
+test('GDPR export contains only the declared personal data', async () => {
+  const { user } = await users.createUser('export@example.org', 'a-strong-enough-passphrase');
+  await users.addFollow(user!.id, 'category', 'health');
+  const data: any = await users.exportUserData(user!.id);
+  assert.equal(data.user.email, 'export@example.org');
+  assert.equal(data.follows.length, 1);
+  // No password material may ever leave the system.
+  assert.ok(!JSON.stringify(data).includes('scrypt$'));
+});
+
+test('account deletion cascades to sessions, follows and bookmarks', async () => {
+  const { user } = await users.createUser('erase@example.org', 'a-strong-enough-passphrase');
+  const sess = await users.createSession(user!.id);
+  await users.addFollow(user!.id, 'category', 'space');
+  const [ev] = await db.query<any>(`SELECT id FROM event LIMIT 1`);
+  await users.toggleBookmark(user!.id, ev.id);
+
+  await users.deleteUser(user!.id);
+
+  assert.equal((await db.query(`SELECT 1 FROM app_user WHERE id=$1`, [user!.id])).length, 0);
+  assert.equal((await db.query(`SELECT 1 FROM follow WHERE user_id=$1`, [user!.id])).length, 0);
+  assert.equal((await db.query(`SELECT 1 FROM bookmark WHERE user_id=$1`, [user!.id])).length, 0);
+  assert.equal((await db.query(`SELECT 1 FROM user_session WHERE user_id=$1`, [user!.id])).length, 0);
+  assert.equal(await users.resolveSession(sess.cookie), null);
+});
+
+test('disabled accounts cannot authenticate or resolve sessions', async () => {
+  const { user } = await users.createUser('disabled@example.org', 'a-strong-enough-passphrase');
+  const sess = await users.createSession(user!.id);
+  await db.query(`UPDATE app_user SET disabled=TRUE WHERE id=$1`, [user!.id]);
+  assert.equal(await users.authenticate('disabled@example.org', 'a-strong-enough-passphrase'), null);
+  assert.equal(await users.resolveSession(sess.cookie), null);
+});

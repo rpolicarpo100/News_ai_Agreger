@@ -45,6 +45,7 @@ Specification §11. A 98-reliability instrument like USGS reporting a magnitude 
 | Agents | `agent_run`, `supervisor_review`, `review_queue` |
 | Metrics | `event_view` |
 | Control | `audit_log`, `security_event`, `system_flag`, `schema_meta` |
+| Accounts | `app_user`, `user_session`, `follow`, `bookmark` |
 
 Design notes worth stating:
 
@@ -119,6 +120,9 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 - **Anti-manipulation** (§27): bot user-agents rejected, 30-minute dedupe window per session per event, hourly session cap. Rejections are stored with a reason for auditing.
 - **Privacy** (§71): no IP is stored. `sessionHash = sha256(salt | date | ip | ua)`, truncated, rotating daily — sufficient to stop refresh inflation, insufficient to identify a person.
 - **Copyright** (§72): title, feed-provided summary, link. No full-text republication.
+- **Admin sessions**: the `ADMIN_TOKEN` is exchanged for an httpOnly cookie carrying `base64(expiry).hmac(token, "session|expiry")`. Because the HMAC key *is* the admin token, rotating the credential invalidates every live session — the correct behaviour for a rotation. Progressive lockout after 5 failed logins, recorded as security events.
+- **User passwords**: Node's built-in scrypt (N=16384, r=8, p=1) with a unique 16-byte salt per password. Session cookies are opaque random tokens; only their SHA-256 is stored, so a database leak yields no usable cookies. Login returns one message for both unknown email and wrong password, and performs hashing work even when the account does not exist, so neither response body nor timing discloses whether an account exists.
+- **CSRF**: double-submit tokens on every mutating admin and account form. Failures are logged.
 - **Test-data blocking** (§3): CI scans the tree for `Math.random`, faker, placeholder URLs and synthetic-dataset symbols; at runtime `guardAgainstTestData()` exits a production process whose database contains flagged rows or suspect hosts. Host matching is used rather than whole-URL matching, because a Guardian article *about* deepfakes is real journalism, not fake data.
 
 ---
@@ -150,14 +154,15 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 | 41 | Emergency controls | Built: 5 audited flags |
 | 42 | Source health | Built and surfaced on `/status` |
 | 43–56 | Frontend, navigation, dashboard, cards, event page, map, search, filters, trending, most viewed, today | Built |
-| 57–58 | Alerts, daily brief | Schema ready; not exposed (would be empty) |
+| 56 | Personal Intelligence | Built: accounts, follows (country/category/event), bookmarks, personal feed, GDPR export + erasure |
+| 57–58 | Alerts, daily brief | Follow graph now exists; delivery channel not configured, so not exposed |
 | 59–60 | Sharing, SEO | Canonical URLs, OG tags, JSON-LD, sitemap, robots |
 | 61 | Multilingual | UI in PT-PT; category labels centralised for extraction |
 | 62 | Database | 23 tables |
 | 63–67 | Queues, cache, performance, scalability, cost | Background cycle, indexed queries, modular design, zero inference cost |
-| 68–69 | Admin centre | API complete; admin UI is roadmap |
+| 68–69 | Admin centre | Built: control center, sources, review queue, events, audit, security |
 | 70 | Monitoring | `/api/status` + `/api/health` |
-| 71–73 | Privacy, copyright, accessibility | Built: no PII, no full text, semantic HTML, skip link, focus states, reduced motion, ARIA |
+| 71–73 | Privacy, copyright, accessibility | Built: data minimisation, self-service export + erasure, no full text, semantic HTML, skip link, focus states, reduced motion, ARIA |
 | 74–75 | Fail safe, no fake states | Built |
 | 76–78 | Quality gates, testing | Built: 33 tests + CI |
 | 79 | Information quality gate | Built |
@@ -172,9 +177,9 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 ## 6. Roadmap
 
 **Next**
-1. Admin UI over the existing admin API (the API is complete; only the interface is missing).
-2. Accounts + "My Intelligence" — follow countries, categories, events; then alerts and the daily brief become meaningful rather than empty.
-3. Full event graph: typed relations (`caused_by`, `escalation_of`, `same_actor`) on top of the current related-events query.
+1. Alerts and the AI Daily Brief. The follow graph they depend on now exists. Blocked on a delivery channel: an alert system with nowhere to deliver would be a button that does nothing (§4). Needs an email provider (or in-app inbox) to be honest.
+2. Full event graph: typed relations (`caused_by`, `escalation_of`, `same_actor`) on top of the current related-events query.
+3. Password reset. Requires the same email channel as alerts, so the two ship together.
 
 **Then**
 4. LLM specialist agents behind the existing `Agent` interface, constrained to structure extraction and cited claims, versioned and supervised like every other agent. Cost controls per §67.
