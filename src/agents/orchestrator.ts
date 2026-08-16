@@ -11,6 +11,7 @@ import { scoreEvent } from '../pipeline/scoring.js';
 import { audit } from '../core/audit.js';
 import { getFlag, FLAGS } from '../core/flags.js';
 import { sha1 } from '../core/ids.js';
+import { describeLlm, PROMPT_VERSION } from './llm.js';
 
 export const PIPELINE_VERSION = 'orchestrator-1.0.0';
 
@@ -31,12 +32,19 @@ async function loadContext(eventId: string): Promise<AgentContext | null> {
 
 async function recordRun(eventId: string, r: AgentResult, ms: number, inputRefs: string[]): Promise<void> {
   const db = await getDb();
+  // §35: an LLM run must be reconstructible — which model, which prompt version.
+  const out = r.output as any;
+  const modelId: string | null = r.mode === 'llm' ? (out?.model ?? describeLlm()) : null;
+  const [provider, modelVersion] = modelId ? [modelId.split(':')[0], modelId.split(':').slice(1).join(':')] : [null, null];
+  const promptVersion = r.mode === 'llm' ? (out?.promptVersion ?? PROMPT_VERSION) : null;
+
   await db.query(
     `INSERT INTO agent_run (event_id, agent, agent_version, mode, model, model_version, prompt_version,
        input_refs, output, confidence, status, duration_ms)
-     VALUES ($1,$2,$3,$4,NULL,NULL,NULL,$5,$6,$7,$8,$9)`,
-    [eventId, r.agent, r.agentVersion, r.mode, JSON.stringify(inputRefs),
-     JSON.stringify({ output: r.output, notes: r.notes }), r.confidence, r.status, ms]);
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [eventId, r.agent, r.agentVersion, r.mode, provider, modelVersion, promptVersion,
+     JSON.stringify(inputRefs), JSON.stringify({ output: r.output, notes: r.notes }),
+     r.confidence, r.status, ms]);
 }
 
 export interface ProcessResult {
@@ -139,7 +147,13 @@ function supervise(ctx: AgentContext, results: AgentResult[], scores: any[]): Fi
            detail: `${ctx.articles.filter((a) => a.published_at).length}/${ctx.articles.length} with published_at` });
   const unavailable = results.filter((r) => r.status === 'unavailable');
   f.push({ check: 'no_agent_failures', pass: unavailable.length === 0, severity: 'review',
-           detail: unavailable.length ? `failed: ${unavailable.map((r) => r.agent).join(', ')}` : 'all selected agents completed' });
+           detail: unavailable.length ? `unavailable: ${unavailable.map((r) => r.agent).join(', ')}` : 'all selected agents completed' });
+
+  // An LLM response rejected for poor grounding is a signal about the content,
+  // not just a technical hiccup: send the event to a human rather than publish.
+  const blocked = results.filter((r) => r.status === 'blocked');
+  f.push({ check: 'no_blocked_ai_output', pass: blocked.length === 0, severity: 'review',
+           detail: blocked.length ? blocked.map((r) => `${r.agent}: ${r.notes.join('; ')}`).join(' | ') : 'no AI output was rejected' });
   const conf = scores.find((s) => s.kind === 'confidence');
   f.push({ check: 'confidence_computed', pass: conf?.value !== null && conf?.value !== undefined, severity: 'review',
            detail: conf?.unavailableReason ?? `confidence=${conf?.value}` });

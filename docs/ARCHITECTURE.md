@@ -89,6 +89,23 @@ Hard blockers run before scoring: >250 km apart with known coordinates, differen
 
 > Both blockers exist because of defects observed against live data. Without provider identity, 255 unrelated GDACS wildfire alerts collapsed into a single "event" purely because they share a headline template. Without the proximity rule, distant same-category stories merged. Conversely, the similarity path is what correctly merges BBC + Guardian on one airstrike, and RTP + Público on one story.
 
+### LLM agents (`src/agents/llm.ts`)
+
+The design question was how to use a language model without letting it become an author of facts. The answer is that it never emits free text that reaches the reader as a claim: it emits *citations*, and every citation is checked against the source before storage.
+
+`verifyGrounding()` normalises accents, case and punctuation, then requires the quote to appear as a substring of the cited article's title+summary. This is intentionally strict:
+
+- a **fabricated** quote fails (it is nowhere in the text);
+- a **paraphrase** fails, even when its meaning is correct, because unverifiable wording is not evidence;
+- a quote **attributed to the wrong article** fails, which catches the model conflating sources;
+- an inserted word like "no *serious* casualties" fails, because that changes the meaning.
+
+A response where fewer than half the claims verify is rejected wholesale and the supervisor routes the event to human review — a model that fabricates once is not trusted for the remainder of that response.
+
+Reconstructibility (§35) is preserved: each run stores provider, model version, prompt version, input article ids, raw output and status. Cost control (§67) is a per-cycle call ceiling plus token metering exposed on `/api/status`.
+
+When no provider is configured the agent returns `unavailable` with `output: null`. The event page then states that no model produced results, rather than leaving the reader to assume analysis happened.
+
 ### Alerts (`src/pipeline/alerts.ts`)
 
 Rules are evaluated against published events on every pipeline cycle, and immediately on creation so a new rule is never silently empty until the next run. Two invariants:
@@ -164,7 +181,7 @@ Six scores, each a pure function with a persisted factor breakdown, versioned by
 | 4 | Engineering priorities | Followed: integrity → security → accuracy → verifiability |
 | 5–6 | Event-first, lifecycle | Built; permanent ids, `event_state_history` |
 | 7–8 | Orchestrator, supervisor | Built, with selective agent execution |
-| 9 | Specialist agents | 5 deterministic agents built; framework ready for the rest |
+| 9 | Specialist agents | 5 deterministic agents + a grounded LLM extraction agent whose every claim is verified verbatim against its cited article |
 | 10–13 | Source intelligence, reliability, provenance, independence | Built; `publisher_group` drives independence |
 | 14–15 | Duplicates/clustering, entities | Built |
 | 16–17 | Geo, timeline | Built, with explicit approximation labelling |
@@ -217,9 +234,9 @@ A hand-written QR encoder was built first and discarded: it produced correctly-s
 ## 6. Roadmap
 
 **Next**
-1. LLM specialist agents behind the existing `Agent` interface, constrained to structure extraction and cited claims, versioned and supervised like every other agent.
-2. Email as a second alert channel, plus password reset (both need the same provider, so they ship together). The in-app inbox means neither is blocking today.
-3. Graph traversal UI: explore multi-hop paths between events, with every hop showing its evidence.
+1. Email as a second alert channel, plus password reset (both need the same provider, so they ship together). The in-app inbox means neither is blocking today.
+2. Graph traversal UI: explore multi-hop paths between events, with every hop showing its evidence.
+3. More specialist LLM agents (politics claim-typing, science paper vs press-release distinction) reusing the grounding harness.
 
 **Then**
 4. LLM specialist agents behind the existing `Agent` interface, constrained to structure extraction and cited claims, versioned and supervised like every other agent. Cost controls per §67.

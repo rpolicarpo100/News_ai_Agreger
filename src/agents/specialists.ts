@@ -164,4 +164,14 @@ export const verificationAgent: Agent = {
   },
 };
 
-export const ALL_AGENTS: Agent[] = [naturalEventsAgent, warConflictAgent, entityAgent, contradictionAgent, verificationAgent];
+import { llmExtractionAgent } from './llm.js';
+
+/**
+ * Deterministic agents first, then the LLM agent. Order matters only for
+ * readability: the supervisor treats all runs uniformly, and the LLM agent
+ * reports 'unavailable' when no provider is configured rather than guessing.
+ */
+export const ALL_AGENTS: Agent[] = [
+  naturalEventsAgent, warConflictAgent, entityAgent, contradictionAgent, verificationAgent,
+  llmExtractionAgent,
+];

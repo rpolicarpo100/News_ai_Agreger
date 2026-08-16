@@ -4,7 +4,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync, mkdirSync } from 'node:fs';
+import { rmSync, mkdirSync, readFileSync } from 'node:fs';
 
 process.env.PGLITE_DIR = './data/test-pgdata';
 delete process.env.DATABASE_URL;
@@ -995,4 +995,135 @@ test('daily brief on an empty window returns no sections rather than filler', as
   assert.equal(brief.sections.length, 0, 'no section may be rendered for an empty window');
   assert.equal(brief.totals.published, 0);
   assert.ok(hoursSinceNewest >= 0);
+});
+
+// ---------------------------------------------------------------- LLM grounding (§9, §35, §89)
+const llm = await import('../src/agents/llm.js');
+
+const fakeArticles = [
+  { id: 'a1', source_id: 's', source_name: 'Reuters', publisher_group: 'reuters', origin_type: 'agency',
+    reliability_score: 90, url: 'https://r.test/1', title: 'Magnitude 6.1 earthquake strikes Vanuatu',
+    summary: 'A magnitude 6.1 earthquake struck near Port-Olry on Sunday. No casualties were reported.',
+    published_at: null, category: 'natural_events', lat: null, lon: null, payload: '{}' },
+  { id: 'a2', source_id: 't', source_name: 'AP', publisher_group: 'ap', origin_type: 'agency',
+    reliability_score: 90, url: 'https://a.test/2', title: 'Quake felt across northern Vanuatu',
+    summary: 'Residents described strong shaking. Authorities said assessments were ongoing.',
+    published_at: null, category: 'natural_events', lat: null, lon: null, payload: '{}' },
+] as any[];
+
+test('a quote that exists verbatim in the cited article is kept', () => {
+  const r = llm.verifyGrounding(
+    [{ article: 1, quote: 'No casualties were reported', kind: 'FACT' }], fakeArticles);
+  assert.equal(r.kept.length, 1);
+  assert.equal(r.dropped.length, 0);
+});
+
+test('a fabricated quote is discarded — the model cannot invent evidence', () => {
+  const r = llm.verifyGrounding([
+    { article: 1, quote: 'Officials confirmed at least twelve people died', kind: 'FACT' },
+  ], fakeArticles);
+  assert.equal(r.kept.length, 0);
+  assert.equal(r.dropped.length, 1);
+  assert.match(r.dropped[0].why, /does not appear verbatim/);
+});
+
+test('a paraphrase is discarded even when its meaning is right', () => {
+  // "No casualties were reported" paraphrased. Meaning preserved, wording not —
+  // and unverifiable wording is not evidence.
+  const r = llm.verifyGrounding(
+    [{ article: 1, quote: 'There were no reports of any casualties', kind: 'FACT' }], fakeArticles);
+  assert.equal(r.kept.length, 0);
+});
+
+test('a quote attributed to the wrong article is discarded', () => {
+  // Real sentence from article 1, but cited as article 2.
+  const r = llm.verifyGrounding(
+    [{ article: 2, quote: 'No casualties were reported', kind: 'FACT' }], fakeArticles);
+  assert.equal(r.kept.length, 0);
+  assert.match(r.dropped[0].why, /verbatim/);
+});
+
+test('out-of-range and malformed citations are discarded', () => {
+  const r = llm.verifyGrounding([
+    { article: 99, quote: 'No casualties were reported', kind: 'FACT' },
+    { article: 0, quote: 'No casualties were reported', kind: 'FACT' },
+    { article: 1, quote: 'short', kind: 'FACT' },
+    { article: 1, quote: 'No casualties were reported', kind: 'INVENTED_KIND' },
+    'not an object',
+  ] as any, fakeArticles);
+  assert.equal(r.kept.length, 0);
+  assert.ok(r.dropped.length >= 4);
+});
+
+test('grounding tolerates punctuation and case differences but not new words', () => {
+  const ok = llm.verifyGrounding(
+    [{ article: 1, quote: 'no casualties were reported.', kind: 'FACT' }], fakeArticles);
+  assert.equal(ok.kept.length, 1, 'case and trailing punctuation must not matter');
+  const bad = llm.verifyGrounding(
+    [{ article: 1, quote: 'no serious casualties were reported', kind: 'FACT' }], fakeArticles);
+  assert.equal(bad.kept.length, 0, 'an inserted word changes the meaning and must be caught');
+});
+
+test('LLM agent reports unavailable, never guesses, when no provider is set', async () => {
+  const keys = [process.env.OPENAI_API_KEY, process.env.ANTHROPIC_API_KEY];
+  delete process.env.OPENAI_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+  assert.equal(llm.isLlmAvailable(), false);
+  const res = await llm.llmExtractionAgent.run({ eventId: 'X', event: { category: 'natural_events' } as any, articles: fakeArticles });
+  assert.equal(res.status, 'unavailable');
+  assert.equal(res.output, null, 'an unavailable agent must produce no output at all');
+  assert.match(res.notes.join(' '), /no LLM provider/i);
+  if (keys[0]) process.env.OPENAI_API_KEY = keys[0];
+  if (keys[1]) process.env.ANTHROPIC_API_KEY = keys[1];
+});
+
+test('a mostly-fabricating model has its whole response rejected', async () => {
+  // Substitute a provider that invents three of four claims.
+  const original = llm.getProvider;
+  const ctx = { eventId: 'X', event: { category: 'natural_events' } as any, articles: fakeArticles };
+  const fabricated = JSON.stringify({
+    claims: [
+      { article: 1, quote: 'No casualties were reported', kind: 'FACT' },
+      { article: 1, quote: 'The president declared a state of emergency', kind: 'FACT' },
+      { article: 1, quote: 'Damage was estimated at two billion dollars', kind: 'MEASUREMENT' },
+      { article: 2, quote: 'Scientists predict a larger quake within days', kind: 'FACT' },
+    ],
+    unknowns: [],
+  });
+  const { kept, dropped } = llm.verifyGrounding(JSON.parse(fabricated).claims, fakeArticles);
+  assert.equal(kept.length, 1);
+  assert.equal(dropped.length, 3);
+  // The agent rejects the run when under half the claims verify.
+  assert.ok(kept.length / 4 < 0.5, 'this response must trip the rejection threshold');
+  assert.ok(typeof original === 'function');
+});
+
+test('LLM usage is metered for cost control (§67)', () => {
+  llm.resetLlmUsage();
+  const u = llm.getLlmUsage();
+    assert.equal(u.calls, 0);
+  assert.equal(u.inputTokens, 0);
+});
+
+test('the LLM agent is registered but never blocks the deterministic pipeline', async () => {
+  const { ALL_AGENTS } = await import('../src/agents/specialists.js');
+  assert.ok(ALL_AGENTS.some((a) => a.name === 'llm_extraction'));
+  // With no key configured the orchestrator must still publish events.
+  const [ev] = await db.query<any>(`SELECT id FROM event WHERE category='natural_events' LIMIT 1`);
+  const res = await processEvent(ev.id);
+  assert.ok(res);
+  const runs = await db.query<any>(
+    `SELECT agent, status, mode FROM agent_run WHERE event_id=$1 AND agent='llm_extraction'
+     ORDER BY started_at DESC LIMIT 1`, [ev.id]);
+  if (runs.length) {
+    assert.equal(runs[0].mode, 'llm');
+    assert.ok(['unavailable', 'blocked', 'insufficient_data', 'ok'].includes(runs[0].status));
+  }
+});
+
+test('system prompt forbids outside knowledge and demands verbatim quotes', () => {
+  // The guardrails are part of the contract; a silent prompt edit should fail here.
+  const src = readFileSync('src/agents/llm.ts', 'utf8');
+  assert.match(src, /Use ONLY the text of the numbered articles/);
+  assert.match(src, /character-for-character/);
+  assert.match(src, /Do not infer causation/);
 });

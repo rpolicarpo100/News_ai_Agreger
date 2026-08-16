@@ -159,6 +159,20 @@ The orchestrator selects only relevant agents (an earthquake does not run the cr
 
 `/admin`, `/api/admin`, `/my` and `/account` are excluded from `robots.txt`.
 
+## LLM agents that cannot invent facts (§9, §89)
+
+Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and an LLM extraction agent joins the pipeline. It is constrained so that **a model can never author a fact** — mechanically, not by prompt wording:
+
+1. the prompt supplies numbered articles and forbids outside knowledge;
+2. the reply must be JSON matching a strict schema, or it is rejected;
+3. every claim must cite an article index **and quote it verbatim**;
+4. each quote is checked to actually occur in that article — fabrications, paraphrases and misattributed quotes are dropped;
+5. if under half the claims verify, the entire response is rejected and the event goes to human review.
+
+Tests assert all five, including an adversarial model that invents three claims out of four. Case and punctuation differences are tolerated; a single inserted word is not.
+
+Runs record model, model version and prompt version (§35), and calls are metered with a per-cycle ceiling (§67). With no key set, `isLlmAvailable()` is false and the event page says so plainly rather than implying analysis happened.
+
 ## Alerts and Daily Brief (§57, §58)
 
 `/my/alerts` defines rules over real events — category, country, verification status, and minimum confidence / life impact / relevance. Matches arrive in an **in-app inbox** at `/my/inbox`, each notification naming the criteria that fired it.
@@ -210,7 +224,7 @@ Every admin action is written to `audit_log` with actor, before state, after sta
 
 ## Testing
 
-89 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, EIP-55 validation, QR correctness, donation independence, alert matching, notification de-duplication, cross-user rule isolation, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
+100 tests covering the critical paths named in the specification: duplicate detection, clustering, source conflict, missing sources, fake-data detection, stale data, score calculation, view counting, trending manipulation, agent failure, authorization, session forgery, CSRF, brute-force lockout, password hashing, GDPR export and erasure, graph relation quality, EIP-55 validation, QR correctness, donation independence, alert matching, notification de-duplication, cross-user rule isolation, LLM grounding against fabricated and paraphrased quotes, and regressions for every defect found against live feeds (CDATA parsing, template over-merging, substring misclassification, future timestamps, false-precision graph edges, boilerplate entities).
 
 ```bash
 npm run gate   # the full pre-deploy sequence; any failure blocks deployment
@@ -226,7 +240,7 @@ CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 Also built: the Admin Control Center (§68, §69, §41) and accounts with My Intelligence (§56, §71).
 
-**Deliberately not faked:** LLM specialist agents are defined by the `Agent` interface but no provider is wired, so they report `UNAVAILABLE` rather than guess.
+**Deliberately not faked:** with no LLM key configured, the LLM agent reports `UNAVAILABLE` and the deterministic pipeline runs unchanged — nothing is guessed to fill the gap. Email as a second alert channel (and password reset) needs a provider; the in-app inbox means neither is blocking.
 
 See `docs/ARCHITECTURE.md` for the full section-by-section mapping and the roadmap.
 

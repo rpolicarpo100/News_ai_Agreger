@@ -35,6 +35,7 @@ import {
   listNotifications, unreadCount, markAllRead, buildDailyBrief,
 } from '../pipeline/alerts.js';
 import { renderAlerts, renderInbox, renderBrief } from '../web/alerts.js';
+import { isLlmAvailable, describeLlm, getLlmUsage } from '../agents/llm.js';
 import { qrSvg } from '../core/qr.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -325,9 +326,12 @@ export async function systemStatus() {
     counts: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, Number(v)])),
     flags: await allFlags(),
     sources: health,
-    ai_analysis: (await getFlag(FLAGS.AI_ANALYSIS)) === 'on'
-      ? 'deterministic agents active; no LLM provider configured (LLM agents report UNAVAILABLE rather than guessing)'
-      : 'disabled by administrator',
+    ai_analysis: (await getFlag(FLAGS.AI_ANALYSIS)) !== 'on'
+      ? 'disabled by administrator (emergency control)'
+      : isLlmAvailable()
+        ? `deterministic agents active; LLM extraction enabled via ${describeLlm()}. Every LLM claim is verified verbatim against its cited article; unverifiable output is discarded.`
+        : 'deterministic agents active; no LLM provider configured, so LLM agents report UNAVAILABLE rather than guessing',
+    llm: { available: isLlmAvailable(), provider: describeLlm(), usage: getLlmUsage() },
     driver: db.driver,
     time: new Date().toISOString(),
   };

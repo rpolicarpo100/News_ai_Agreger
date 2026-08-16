@@ -282,11 +282,34 @@ export function renderEvent(d: any, viewer?: { csrf: string; following: boolean;
       </tbody></table>`;
   })();
 
+  const usedLlm = d.agent_runs.some((r: any) => r.mode === 'llm' && r.status === 'ok');
   const agentRuns = d.agent_runs.length
-    ? `<table><thead><tr><th>Agente</th><th>Versão</th><th>Modo</th><th>Estado</th><th>Conf.</th><th>ms</th></tr></thead><tbody>
-       ${d.agent_runs.map((r: any) => `<tr><td class="mono">${esc(r.agent)}</td><td class="mono dim">${esc(r.agent_version)}</td><td class="mono dim">${esc(r.mode)}</td><td class="mono ${r.status === 'ok' ? 'ok' : 'warnc'}">${esc(r.status)}</td><td class="mono">${r.confidence ?? 'N/A'}</td><td class="mono dim">${esc(r.duration_ms)}</td></tr>`).join('')}
-       </tbody></table><p class="small dim">Nenhum modelo LLM foi utilizado: todos os agentes activos são determinísticos e reproduzíveis.</p>`
+    ? `<table><thead><tr><th>Agente</th><th>Versão</th><th>Modo</th><th>Modelo</th><th>Estado</th><th>Conf.</th><th>ms</th></tr></thead><tbody>
+       ${d.agent_runs.map((r: any) => `<tr><td class="mono">${esc(r.agent)}</td><td class="mono dim">${esc(r.agent_version)}</td><td class="mono dim">${esc(r.mode)}</td><td class="mono dim">${esc(r.model ? `${r.model}:${r.model_version ?? ''}` : '—')}</td><td class="mono ${r.status === 'ok' ? 'ok' : r.status === 'blocked' ? 'badc' : 'warnc'}">${esc(r.status)}</td><td class="mono">${r.confidence ?? 'N/A'}</td><td class="mono dim">${esc(r.duration_ms)}</td></tr>`).join('')}
+       </tbody></table>
+       <p class="small dim">${usedLlm
+         ? 'Um modelo de linguagem foi utilizado apenas para extrair estrutura. Cada citação foi verificada como presente, palavra por palavra, no artigo citado; o que não foi verificável foi descartado. O modelo não escreve factos.'
+         : 'Nenhum modelo LLM produziu resultados para este evento: todos os agentes utilizados são determinísticos e reproduzíveis.'}</p>`
     : '<p class="small dim">Sem execuções de agentes registadas.</p>';
+
+  // Verified LLM extractions, shown with their quotes so the reader can check them.
+  const llmRun = d.agent_runs.find((r: any) => r.agent === 'llm_extraction' && r.status === 'ok');
+  let llmBlock = '';
+  if (llmRun) {
+    try {
+      const out = JSON.parse(llmRun.output).output;
+      const byKind: Record<string, string[]> = {};
+      for (const c of out.claims ?? []) (byKind[c.kind] ??= []).push(c.quote);
+      const rows = Object.entries(byKind).map(([kind, quotes]) =>
+        `<li class="small"><span class="chip">${esc(kind)}</span><ul class="clean" style="margin-top:5px">
+          ${quotes.slice(0, 4).map((q) => `<li class="small dim">“${esc(q)}”</li>`).join('')}</ul></li>`).join('');
+      llmBlock = `<div class="q"><h3>Afirmações extraídas e verificadas</h3>
+        <ul class="clean">${rows}</ul>
+        ${out.unknowns?.length ? `<p class="small dim" style="margin-top:10px">Por estabelecer, segundo as próprias fontes: ${out.unknowns.map((u: string) => esc(u)).join('; ')}</p>` : ''}
+        <p class="small dim">${esc(out.grounding.kept)}/${esc(out.grounding.proposed)} afirmações passaram a verificação literal. ${out.grounding.dropped.length ? `${out.grounding.dropped.length} descartada(s) por não constarem do artigo citado.` : ''}</p>
+      </div>`;
+    } catch { /* unreadable stored output: show nothing rather than guess */ }
+  }
 
   const jsonLd = {
     '@context': 'https://schema.org', '@type': 'NewsArticle', headline: e.title,
@@ -350,6 +373,8 @@ export function renderEvent(d: any, viewer?: { csrf: string; following: boolean;
       <div class="q"><h3>Why does it matter?</h3>
         <p class="small">Life Impact ${val('life_impact') ?? 'N/A'}/100, derivado da categoria (${esc(e.category_label)}), das medições reportadas e da amplitude geográfica da cobertura. Ver "Why this score?" acima para a decomposição completa.</p>
       </div>
+
+      ${llmBlock}
 
       <div class="q"><h3>What changed?</h3>${changes}</div>
 
