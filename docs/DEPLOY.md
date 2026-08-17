@@ -36,13 +36,18 @@ A chave privada está em `.deploy-keys/gni_deploy_key`, **fora do controlo de ve
 
 ### Enviar o código
 
+O remote já está configurado para `rpolicarpo100/News_ai_Agreger`. Para enviar
+novos commits deste ambiente é preciso indicar a chave (o git não a usa por omissão):
+
 ```bash
 cd /home/user/gni
-export GIT_SSH_COMMAND='ssh -i .deploy-keys/gni_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
-git remote add origin git@github.com:UTILIZADOR/REPOSITORIO.git
-git branch -M main
-git push -u origin main
+export GIT_SSH_COMMAND='ssh -i .deploy-keys/gni_deploy_key -o IdentitiesOnly=yes'
+git push origin main
 ```
+
+Verificado a 17-08-2026: clone limpo do repositório → `npm ci` → `npm run build`
+→ `node dist/index.js` arranca, responde 200 em `/api/health`, e com base vazia
+mostra `NO VERIFIED DATA AVAILABLE` em vez de conteúdo inventado.
 
 > Uma deploy key pertence a **um** repositório. Para vários, use uma chave por repositório
 > ou uma máquina-utilizador. O GitHub rejeita a mesma chave em repositórios diferentes.
