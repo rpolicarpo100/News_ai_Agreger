@@ -1166,3 +1166,112 @@ test('a genuinely erroring agent IS still flagged for review', async () => {
     ALL_AGENTS.pop();
   }
 });
+
+// ---------------------------------------------------------------- retenção
+const retention = await import('../src/pipeline/retention.js');
+const { audit } = await import('../src/core/audit.js');
+
+test('dry run não altera absolutamente nada', async () => {
+  const before = await db.query<any>(`SELECT
+    (SELECT COUNT(*)::int FROM article) a,
+    (SELECT COUNT(*)::int FROM event) e,
+    (SELECT COUNT(*)::int FROM audit_log) al,
+    (SELECT COUNT(*)::int FROM agent_run) ar`);
+  const r = await retention.runRetention({ ...retention.DEFAULT_POLICY,
+    payloadDays: 0, agentRunDays: 0, auditDays: 0, viewDays: 0, staleEventDays: 0, graphDays: 0 }, true);
+  assert.equal(r.dryRun, true);
+  const after = await db.query<any>(`SELECT
+    (SELECT COUNT(*)::int FROM article) a,
+    (SELECT COUNT(*)::int FROM event) e,
+    (SELECT COUNT(*)::int FROM audit_log) al,
+    (SELECT COUNT(*)::int FROM agent_run) ar`);
+  assert.deepEqual(after[0], before[0], 'um dry run tem de ser inofensivo');
+});
+
+test('a retenção NUNCA apaga a proveniência de um artigo', async () => {
+  const [art] = await db.query<any>(
+    `SELECT id, url, title, source_id, published_at FROM article WHERE event_id IS NOT NULL LIMIT 1`);
+  assert.ok(art, 'precisamos de um artigo processado');
+  await retention.runRetention({ ...retention.DEFAULT_POLICY, payloadDays: 0 }, false);
+  const [after] = await db.query<any>(
+    `SELECT id, url, title, source_id, published_at, payload FROM article WHERE id=$1`, [art.id]);
+  assert.ok(after, 'o artigo não pode desaparecer');
+  assert.equal(after.url, art.url, 'o URL de origem tem de sobreviver');
+  assert.equal(after.title, art.title);
+  assert.equal(after.source_id, art.source_id);
+  // Só o payload verbatim é libertado.
+  assert.equal(after.payload, '{"archived":true}');
+});
+
+test('eventos publicados e os seus artigos são intocáveis', async () => {
+  const before = await db.query<any>(`SELECT COUNT(*)::int n FROM event WHERE status='PUBLISHED'`);
+  await retention.runRetention({
+    payloadDays: 0, agentRunDays: 0, auditDays: 0, viewDays: 0, staleEventDays: 0, graphDays: 0,
+  }, false);
+  const after = await db.query<any>(`SELECT COUNT(*)::int n FROM event WHERE status='PUBLISHED'`);
+  assert.equal(after[0].n, before[0].n, 'nenhum evento publicado pode ser removido');
+});
+
+test('a auditoria é resumida, nunca apagada em silêncio (§32)', async () => {
+  await audit({ actor: 'teste', action: 'evento_antigo', objectType: 'teste', reason: 'para arquivar' });
+  await db.query(`UPDATE audit_log SET at = now() - interval '400 days' WHERE action='evento_antigo'`);
+  const r = await retention.runRetention({ ...retention.DEFAULT_POLICY, auditDays: 1 }, false);
+  assert.ok(r.auditArchived > 0);
+  const [arch] = await db.query<any>(
+    `SELECT actor, action, prev_state, new_state, reason FROM audit_log
+     WHERE action='retention_archive' ORDER BY at DESC LIMIT 1`);
+  assert.ok(arch, 'tem de existir uma entrada de arquivo a declarar o que foi compactado');
+  assert.match(arch.reason, /não foi apagado em silêncio/);
+  const prev = JSON.parse(arch.prev_state);
+  assert.ok(prev.entries > 0 && prev.from && prev.to, 'o arquivo declara quantos e de que período');
+  // A própria entrada de arquivo nunca é ela própria arquivada.
+  const again = await retention.runRetention({ ...retention.DEFAULT_POLICY, auditDays: 1 }, false);
+  const [{ n }] = await db.query<any>(
+    `SELECT COUNT(*)::int n FROM audit_log WHERE action='retention_archive'`);
+  assert.ok(n >= 1, 'as entradas de arquivo têm de sobreviver a ciclos seguintes');
+  assert.ok(again.auditArchived >= 0);
+});
+
+test('a execução mais recente de cada agente é sempre preservada (§35)', async () => {
+  const [ev] = await db.query<any>(
+    `SELECT event_id FROM agent_run WHERE event_id IS NOT NULL GROUP BY event_id
+     HAVING COUNT(*) > 1 LIMIT 1`);
+  if (!ev) return; // nada a testar nesta base
+  await db.query(`UPDATE agent_run SET started_at = now() - interval '400 days' WHERE event_id=$1`, [ev.event_id]);
+  await retention.runRetention({ ...retention.DEFAULT_POLICY, agentRunDays: 1 }, false);
+  const kept = await db.query<any>(
+    `SELECT DISTINCT agent FROM agent_run WHERE event_id=$1`, [ev.event_id]);
+  assert.ok(kept.length > 0, 'tem de sobrar pelo menos uma execução por agente para reconstruir a conclusão');
+});
+
+test('eventos seguidos ou marcados nunca são removidos', async () => {
+  const { user } = await users.createUser('retencao@example.org', 'uma-palavra-passe-forte');
+  const [ev] = await db.query<any>(`SELECT id FROM event WHERE status <> 'PUBLISHED' LIMIT 1`);
+  if (!ev) return;
+  await users.addFollow(user!.id, 'event', ev.id);
+  await db.query(`UPDATE event SET last_activity_at = now() - interval '400 days' WHERE id=$1`, [ev.id]);
+  await retention.runRetention({ ...retention.DEFAULT_POLICY, staleEventDays: 1 }, false);
+  const still = await db.query(`SELECT 1 FROM event WHERE id=$1`, [ev.id]);
+  assert.equal(still.length, 1, 'um evento que alguém segue não pode ser recolhido como lixo');
+});
+
+test('eventos na fila de revisão nunca são removidos', async () => {
+  const [q] = await db.query<any>(
+    `SELECT event_id FROM review_queue WHERE state='open' LIMIT 1`);
+  if (!q) return;
+  await db.query(`UPDATE event SET last_activity_at = now() - interval '400 days' WHERE id=$1`, [q.event_id]);
+  await retention.runRetention({ ...retention.DEFAULT_POLICY, staleEventDays: 1 }, false);
+  const still = await db.query(`SELECT 1 FROM event WHERE id=$1`, [q.event_id]);
+  assert.equal(still.length, 1, 'não se apaga o que está à espera de decisão humana');
+});
+
+test('databaseSize não inventa um número quando não sabe', async () => {
+  const s = await retention.databaseSize();
+  if (s.bytes === null) {
+    assert.match(s.pretty, /indisponível/);
+    assert.deepEqual(s.tables, []);
+  } else {
+    assert.ok(s.bytes > 0);
+    assert.ok(s.tables.length > 0);
+  }
+});

@@ -36,6 +36,7 @@ import {
 } from '../pipeline/alerts.js';
 import { renderAlerts, renderInbox, renderBrief } from '../web/alerts.js';
 import { isLlmAvailable, describeLlm, getLlmUsage } from '../agents/llm.js';
+import { runRetention, databaseSize, DEFAULT_POLICY } from '../pipeline/retention.js';
 import { qrSvg } from '../core/qr.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -245,6 +246,15 @@ admin.post('/review-queue/:id/resolve', async (req, res) => {
   await audit({ actor: 'admin', action: 'review_resolve', objectType: 'event', objectId: rows[0].event_id, prevState: rows[0].state, newState: decision, reason: String(reason ?? 'human review') });
   res.json({ ok: true });
 });
+admin.get('/storage', async (_req, res) => {
+  res.json({ size: await databaseSize(), policy: DEFAULT_POLICY, preview: await runRetention(DEFAULT_POLICY, true) });
+});
+
+admin.post('/retention/run', async (req, res) => {
+  const dryRun = req.body?.dryRun !== false;
+  res.json(await runRetention(DEFAULT_POLICY, dryRun));
+});
+
 admin.get('/audit', async (req, res) => {
   const db = await getDb();
   res.json({ entries: await db.query(`SELECT * FROM audit_log ORDER BY at DESC LIMIT $1`, [Math.min(Number(req.query.limit ?? 100), 500)]) });
