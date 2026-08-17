@@ -20,6 +20,8 @@ jobs:
         run: npm run check:secrets
       - name: Test-data scan
         run: npm run check:testdata
+      - name: Production build sanity
+        run: npm run check:prod-build
       - name: Type check
         run: npm run typecheck
       - name: Unit + integration tests

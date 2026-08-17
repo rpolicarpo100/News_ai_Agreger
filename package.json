@@ -12,7 +12,8 @@
     "test": "tsx --test tests/*.test.ts",
     "check:testdata": "tsx scripts/check-no-test-data.ts",
     "check:secrets": "tsx scripts/check-secrets.ts",
-    "gate": "npm run check:secrets && npm run check:testdata && npm run typecheck && npm test"
+    "gate": "npm run check:secrets && npm run check:testdata && npm run check:prod-build && npm run typecheck && npm test",
+    "check:prod-build": "tsx scripts/check-prod-build.ts"
   },
   "keywords": [],
   "author": "",

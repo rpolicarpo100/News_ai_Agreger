@@ -12,7 +12,7 @@ services:
     name: gni-web
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true
@@ -41,7 +41,7 @@ services:
     name: gni-worker
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run worker
     autoDeploy: false
     envVars:
