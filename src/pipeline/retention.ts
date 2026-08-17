@@ -40,6 +40,8 @@ export interface RetentionPolicy {
   staleEventDays: number;
   /** Dias de arestas do grafo a manter para eventos inactivos. */
   graphDays: number;
+  /** Dias de revisões do supervisor a manter (a mais recente por evento é sempre guardada). */
+  supervisorDays: number;
 }
 
 export const DEFAULT_POLICY: RetentionPolicy = {
@@ -49,6 +51,7 @@ export const DEFAULT_POLICY: RetentionPolicy = {
   viewDays: Number(process.env.RETAIN_VIEW_DAYS ?? 60),
   staleEventDays: Number(process.env.RETAIN_STALE_EVENT_DAYS ?? 45),
   graphDays: Number(process.env.RETAIN_GRAPH_DAYS ?? 30),
+  supervisorDays: Number(process.env.RETAIN_SUPERVISOR_DAYS ?? 30),
 };
 
 export interface RetentionReport {
@@ -59,24 +62,41 @@ export interface RetentionReport {
   viewsCompacted: number;
   staleEventsRemoved: number;
   graphEdgesRemoved: number;
+  supervisorReviewsRemoved: number;
   notes: string[];
 }
 
-const days = (n: number) => `${n} days`;
+/**
+ * Interpola um intervalo em SQL. Recusa valores não numéricos em vez de gerar
+ * SQL inválido — um teste apanhou "undefined days" quando uma política parcial
+ * era passada. Também impede injecção por esta via, já que o valor é validado
+ * como número antes de entrar na query.
+ */
+const days = (n: number): string => {
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`retenção: intervalo inválido (${n}); a política tem de ser completa e numérica`);
+  }
+  return `${Math.floor(n)} days`;
+};
 
 /**
  * `dryRun` conta o que seria afectado sem alterar nada — para que a política
  * possa ser inspeccionada antes de correr.
  */
 export async function runRetention(
-  policy: RetentionPolicy = DEFAULT_POLICY,
+  policy: Partial<RetentionPolicy> = DEFAULT_POLICY,
   dryRun = false,
 ): Promise<RetentionReport> {
+  // Uma política parcial herda os restantes valores do padrão, para que um
+  // campo em falta nunca produza SQL inválido.
+  const p: RetentionPolicy = { ...DEFAULT_POLICY, ...policy };
+  policy = p;
   const db = await getDb();
   const notes: string[] = [];
   const r: RetentionReport = {
     dryRun, payloadsFreed: 0, agentRunsRemoved: 0, auditArchived: 0,
-    viewsCompacted: 0, staleEventsRemoved: 0, graphEdgesRemoved: 0, notes,
+    viewsCompacted: 0, staleEventsRemoved: 0, graphEdgesRemoved: 0,
+    supervisorReviewsRemoved: 0, notes,
   };
 
   // ---------------------------------------------------------------- 1. payloads
@@ -85,7 +105,7 @@ export async function runRetention(
   // timestamps mantêm-se — a proveniência continua completa.
   const payloadWhere = `
     payload <> '{"archived":true}'
-    AND ingested_at < now() - interval '${days(policy.payloadDays)}'
+    AND ingested_at < now() - interval '${days(p.payloadDays)}'
     AND event_id IS NOT NULL`;
   const [{ n: payloadCount }] = await db.query<{ n: string }>(
     `SELECT COUNT(*) AS n FROM article WHERE ${payloadWhere}`);
@@ -93,13 +113,13 @@ export async function runRetention(
   if (!dryRun && r.payloadsFreed > 0) {
     await db.query(`UPDATE article SET payload = '{"archived":true}' WHERE ${payloadWhere}`);
   }
-  notes.push(`payload verbatim libertado de ${r.payloadsFreed} artigo(s) com mais de ${policy.payloadDays} dias; proveniência (URL, título, fonte, datas) mantida`);
+  notes.push(`payload verbatim libertado de ${r.payloadsFreed} artigo(s) com mais de ${p.payloadDays} dias; proveniência (URL, título, fonte, datas) mantida`);
 
   // ---------------------------------------------------------------- 2. agent runs
   // Mantém-se sempre a execução mais recente de cada agente por evento, para
   // que "como chegou o sistema a esta conclusão" continue respondível (§35).
   const agentWhere = `
-    started_at < now() - interval '${days(policy.agentRunDays)}'
+    started_at < now() - interval '${days(p.agentRunDays)}'
     AND id NOT IN (
       SELECT DISTINCT ON (event_id, agent) id FROM agent_run
       ORDER BY event_id, agent, started_at DESC)`;
@@ -116,16 +136,16 @@ export async function runRetention(
   // o que foi compactado, para que a lacuna seja ela própria auditável.
   const [{ n: auditCount }] = await db.query<{ n: string }>(
     `SELECT COUNT(*) AS n FROM audit_log
-     WHERE at < now() - interval '${days(policy.auditDays)}' AND action <> 'retention_archive'`);
+     WHERE at < now() - interval '${days(p.auditDays)}' AND action <> 'retention_archive'`);
   r.auditArchived = Number(auditCount);
   if (!dryRun && r.auditArchived > 0) {
     const [range] = await db.query<{ min_at: string; max_at: string }>(
       `SELECT MIN(at) AS min_at, MAX(at) AS max_at FROM audit_log
-       WHERE at < now() - interval '${days(policy.auditDays)}' AND action <> 'retention_archive'`);
+       WHERE at < now() - interval '${days(p.auditDays)}' AND action <> 'retention_archive'`);
     const [byAction] = await db.query<{ summary: string }>(
       `SELECT string_agg(action || '=' || n, ', ' ORDER BY n DESC) AS summary FROM (
          SELECT action, COUNT(*)::int AS n FROM audit_log
-         WHERE at < now() - interval '${days(policy.auditDays)}' AND action <> 'retention_archive'
+         WHERE at < now() - interval '${days(p.auditDays)}' AND action <> 'retention_archive'
          GROUP BY action LIMIT 20) x`);
     await audit({
       actor: 'retention',
@@ -134,18 +154,18 @@ export async function runRetention(
       objectId: null,
       prevState: { entries: r.auditArchived, from: range.min_at, to: range.max_at },
       newState: { summarised: true, breakdown: byAction?.summary ?? '' },
-      reason: `${r.auditArchived} registos anteriores a ${policy.auditDays} dias resumidos nesta entrada; o histórico não foi apagado em silêncio`,
+      reason: `${r.auditArchived} registos anteriores a ${p.auditDays} dias resumidos nesta entrada; o histórico não foi apagado em silêncio`,
     });
     await db.query(
       `DELETE FROM audit_log
-       WHERE at < now() - interval '${days(policy.auditDays)}' AND action <> 'retention_archive'`);
+       WHERE at < now() - interval '${days(p.auditDays)}' AND action <> 'retention_archive'`);
   }
   notes.push(`${r.auditArchived} registo(s) de auditoria resumidos numa entrada de arquivo`);
 
   // ---------------------------------------------------------------- 4. views
   // As contagens por evento continuam correctas porque o trending usa janelas de
   // 24/48h; linhas individuais mais antigas do que isso já não são consultadas.
-  const viewWhere = `at < now() - interval '${days(policy.viewDays)}'`;
+  const viewWhere = `at < now() - interval '${days(p.viewDays)}'`;
   const [{ n: viewCount }] = await db.query<{ n: string }>(
     `SELECT COUNT(*) AS n FROM event_view WHERE ${viewWhere}`);
   r.viewsCompacted = Number(viewCount);
@@ -159,7 +179,7 @@ export async function runRetention(
   // em revisão nem seguidos por ninguém. Não se perde nada verificado.
   const staleWhere = `
     status <> 'PUBLISHED'
-    AND last_activity_at < now() - interval '${days(policy.staleEventDays)}'
+    AND last_activity_at < now() - interval '${days(p.staleEventDays)}'
     AND id NOT IN (SELECT event_id FROM review_queue WHERE state = 'open')
     AND id NOT IN (SELECT value FROM follow WHERE kind = 'event')
     AND id NOT IN (SELECT event_id FROM bookmark)`;
@@ -176,7 +196,7 @@ export async function runRetention(
 
   // ---------------------------------------------------------------- 6. grafo
   const graphWhere = `
-    created_at < now() - interval '${days(policy.graphDays)}'
+    created_at < now() - interval '${days(p.graphDays)}'
     AND from_event NOT IN (SELECT id FROM event WHERE status = 'PUBLISHED')
     AND to_event NOT IN (SELECT id FROM event WHERE status = 'PUBLISHED')`;
   const [{ n: edgeCount }] = await db.query<{ n: string }>(
@@ -187,9 +207,23 @@ export async function runRetention(
   }
   notes.push(`${r.graphEdgesRemoved} aresta(s) do grafo entre eventos não publicados removidas`);
 
+  // ---------------------------------------------------------------- 7. revisões do supervisor
+  // Cresce uma linha por evento por ciclo. A mais recente de cada evento é
+  // sempre mantida, porque é ela que a página do evento mostra.
+  const supWhere = `
+    at < now() - interval '${days(p.supervisorDays)}'
+    AND id NOT IN (SELECT DISTINCT ON (event_id) id FROM supervisor_review ORDER BY event_id, at DESC)`;
+  const [{ n: supCount }] = await db.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM supervisor_review WHERE ${supWhere}`);
+  r.supervisorReviewsRemoved = Number(supCount);
+  if (!dryRun && r.supervisorReviewsRemoved > 0) {
+    await db.query(`DELETE FROM supervisor_review WHERE ${supWhere}`);
+  }
+  notes.push(`${r.supervisorReviewsRemoved} revisão(ões) antigas do supervisor removidas; a mais recente de cada evento é preservada`);
+
   if (!dryRun) {
     const touched = r.payloadsFreed + r.agentRunsRemoved + r.auditArchived +
-      r.viewsCompacted + r.staleEventsRemoved + r.graphEdgesRemoved;
+      r.viewsCompacted + r.staleEventsRemoved + r.graphEdgesRemoved + r.supervisorReviewsRemoved;
     if (touched > 0) {
       await audit({
         actor: 'retention', action: 'run', objectType: 'pipeline', objectId: 'retention',

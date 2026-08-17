@@ -1275,3 +1275,29 @@ test('databaseSize não inventa um número quando não sabe', async () => {
     assert.ok(s.tables.length > 0);
   }
 });
+
+test('a revisão mais recente do supervisor é sempre preservada', async () => {
+  const [ev] = await db.query<any>(
+    `SELECT event_id FROM supervisor_review GROUP BY event_id HAVING COUNT(*) > 1 LIMIT 1`);
+  if (!ev) return;
+  await db.query(`UPDATE supervisor_review SET at = now() - interval '400 days' WHERE event_id=$1`, [ev.event_id]);
+  await retention.runRetention({ ...retention.DEFAULT_POLICY, supervisorDays: 1 }, false);
+  const left = await db.query<any>(`SELECT COUNT(*)::int n FROM supervisor_review WHERE event_id=$1`, [ev.event_id]);
+  assert.equal(left[0].n, 1, 'a página do evento precisa da decisão mais recente');
+});
+
+test('uma política parcial herda o resto em vez de gerar SQL inválido', async () => {
+  // Regressão: passar { payloadDays: 0 } gerava "undefined days" no SQL.
+  const r = await retention.runRetention({ payloadDays: 0 }, true);
+  assert.equal(r.dryRun, true);
+  assert.ok(Number.isInteger(r.agentRunsRemoved));
+});
+
+test('um intervalo inválido é recusado, não interpolado no SQL', async () => {
+  await assert.rejects(
+    () => retention.runRetention({ payloadDays: Number.NaN }, true),
+    /intervalo inválido/);
+  await assert.rejects(
+    () => retention.runRetention({ auditDays: -5 }, true),
+    /intervalo inválido/);
+});
