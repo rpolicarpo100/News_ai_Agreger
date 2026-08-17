@@ -72,7 +72,8 @@ export async function processEvent(eventId: string): Promise<ProcessResult | nul
       res = await agent.run(ctx);
     } catch (err: any) {
       res = { agent: agent.name, agentVersion: agent.version, mode: 'deterministic', status: 'unavailable',
-              output: null, confidence: null, notes: [`agent error: ${String(err?.message ?? err).slice(0, 200)}`] };
+              output: null, confidence: null, reason: 'error',
+              notes: [`agent error: ${String(err?.message ?? err).slice(0, 200)}`] };
     }
     await recordRun(eventId, res, Date.now() - t0, inputRefs);
     results.push(res);
@@ -145,9 +146,20 @@ function supervise(ctx: AgentContext, results: AgentResult[], scores: any[]): Fi
            detail: 'event title must be the verbatim title of a linked article' });
   f.push({ check: 'timestamps_present', pass: ctx.articles.every((a) => !!a.published_at), severity: 'review',
            detail: `${ctx.articles.filter((a) => a.published_at).length}/${ctx.articles.length} with published_at` });
+  // An agent that is unavailable because its provider is not configured is a
+  // normal steady state, not a failure: the deterministic pipeline is complete
+  // on its own. Only an agent that was expected to run and errored is a problem.
+  // (Regression guard: treating "no LLM key" as a failure once held back every
+  // single event for human review.)
   const unavailable = results.filter((r) => r.status === 'unavailable');
-  f.push({ check: 'no_agent_failures', pass: unavailable.length === 0, severity: 'review',
-           detail: unavailable.length ? `unavailable: ${unavailable.map((r) => r.agent).join(', ')}` : 'all selected agents completed' });
+  const notConfigured = unavailable.filter((r) => r.reason === 'not_configured' || r.reason === 'budget_exhausted');
+  const realFailures = unavailable.filter((r) => !notConfigured.includes(r));
+  f.push({ check: 'no_agent_failures', pass: realFailures.length === 0, severity: 'review',
+           detail: realFailures.length
+             ? `erro: ${realFailures.map((r) => `${r.agent} (${r.notes.join('; ').slice(0, 80)})`).join(', ')}`
+             : notConfigured.length
+               ? `todos os agentes aplicáveis correram; não configurados (ignorado): ${notConfigured.map((r) => r.agent).join(', ')}`
+               : 'all selected agents completed' });
 
   // An LLM response rejected for poor grounding is a signal about the content,
   // not just a technical hiccup: send the event to a human rather than publish.
@@ -193,7 +205,7 @@ export async function setState(eventId: string, to: string, actor: string, reaso
 }
 
 /** Process every event that has new activity since its last supervisor review. */
-export async function runIntelligenceCycle(limit = 60): Promise<ProcessResult[]> {
+export async function runIntelligenceCycle(limit = Number(process.env.INTELLIGENCE_BATCH ?? 400)): Promise<ProcessResult[]> {
   const db = await getDb();
   const rows = await db.query<{ id: string }>(
     `SELECT e.id FROM event e

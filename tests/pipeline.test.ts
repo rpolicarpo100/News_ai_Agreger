@@ -1127,3 +1127,42 @@ test('system prompt forbids outside knowledge and demands verbatim quotes', () =
   assert.match(src, /character-for-character/);
   assert.match(src, /Do not infer causation/);
 });
+
+test('an unconfigured optional agent does not hold events for human review', async () => {
+  // Regression: adding the LLM agent made every event fail the
+  // 'no_agent_failures' supervisor check, because "no API key configured" was
+  // treated as a failure. Publishing dropped to near zero.
+  const keys = [process.env.OPENAI_API_KEY, process.env.ANTHROPIC_API_KEY];
+  delete process.env.OPENAI_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+
+  const [ev] = await db.query<any>(
+    `SELECT e.id FROM event e JOIN article a ON a.event_id=e.id
+     WHERE e.category <> 'unclassified' AND a.published_at IS NOT NULL LIMIT 1`);
+  const res = await processEvent(ev.id);
+  assert.ok(res);
+  const check = res!.supervisor.findings.find((f: any) => f.check === 'no_agent_failures');
+  assert.equal(check.pass, true, 'an unconfigured provider must not count as an agent failure');
+  assert.match(check.detail, /não configurados|all selected/);
+
+  if (keys[0]) process.env.OPENAI_API_KEY = keys[0];
+  if (keys[1]) process.env.ANTHROPIC_API_KEY = keys[1];
+});
+
+test('a genuinely erroring agent IS still flagged for review', async () => {
+  const { ALL_AGENTS } = await import('../src/agents/specialists.js');
+  const boom = {
+    name: 'exploding_test_agent', version: '1.0.0',
+    appliesTo: () => true,
+    run: async () => { throw new Error('simulated agent crash'); },
+  };
+  ALL_AGENTS.push(boom as any);
+  try {
+    const [ev] = await db.query<any>(`SELECT id FROM event LIMIT 1`);
+    const res = await processEvent(ev.id);
+    const check = res!.supervisor.findings.find((f: any) => f.check === 'no_agent_failures');
+    assert.equal(check.pass, false, 'a crashing agent must still be caught');
+    assert.match(check.detail, /erro:/);
+  } finally {
+    ALL_AGENTS.pop();
+  }
+});

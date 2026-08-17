@@ -20,6 +20,14 @@ export interface EventRef {
 
 export type AgentStatus = 'ok' | 'insufficient_data' | 'unavailable' | 'blocked';
 
+/**
+ * Why an agent produced no output. The supervisor treats these differently:
+ * 'not_configured' is a normal steady state (an optional provider is absent),
+ * whereas 'error' means something that was expected to work did not.
+ * Matching on note text proved fragile, so the reason is explicit.
+ */
+export type UnavailableReason = 'not_configured' | 'budget_exhausted' | 'error';
+
 export interface AgentResult<T = unknown> {
   agent: string;
   agentVersion: string;
@@ -29,6 +37,8 @@ export interface AgentResult<T = unknown> {
   output: T | null;
   confidence: number | null;
   notes: string[];
+  /** Set when status is 'unavailable'. */
+  reason?: UnavailableReason;
 }
 
 export interface Agent<T = unknown> {

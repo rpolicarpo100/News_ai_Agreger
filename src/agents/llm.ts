@@ -226,10 +226,12 @@ export const llmExtractionAgent: Agent<LlmExtractionOutput> = {
     if (!provider) {
       // §74/§75: report the real state rather than degrading silently to a guess.
       return { ...base, status: 'unavailable', output: null, confidence: null,
+        reason: 'not_configured',
         notes: ['No LLM provider configured. Deterministic agents remain active; no analysis is fabricated.'] };
     }
     if (usage.calls >= MAX_CALLS_PER_CYCLE) {
       return { ...base, status: 'unavailable', output: null, confidence: null,
+        reason: 'budget_exhausted',
         notes: [`LLM call budget for this cycle exhausted (${MAX_CALLS_PER_CYCLE}).`] };
     }
 
@@ -242,6 +244,7 @@ export const llmExtractionAgent: Agent<LlmExtractionOutput> = {
       text = r.text;
     } catch (err: any) {
       return { ...base, status: 'unavailable', output: null, confidence: null,
+        reason: 'error',
         notes: [`LLM call failed: ${String(err?.message ?? err).slice(0, 200)}`] };
     }
 

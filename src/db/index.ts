@@ -44,7 +44,27 @@ export async function getDb(): Promise<Db> {
     };
   } else {
     const { PGlite } = await import('@electric-sql/pglite');
-    const pg = new PGlite(process.env.PGLITE_DIR ?? './data/pgdata');
+    const dir = process.env.PGLITE_DIR ?? './data/pgdata';
+    let pg: InstanceType<typeof PGlite>;
+    try {
+      pg = new PGlite(dir);
+      // Force initialisation now so a corrupt directory fails here, where it can
+      // be handled, rather than on the first real query.
+      await pg.query('SELECT 1');
+    } catch (err) {
+      // A local PGlite directory can be left unusable by an unclean shutdown.
+      // This is the embedded DEV database only: every row in it is re-derivable
+      // by re-running ingestion against the live feeds, so recreating it loses
+      // nothing real. Production uses DATABASE_URL and never takes this path.
+      if (process.env.NODE_ENV === 'production' || process.env.PGLITE_NO_RESET === 'true') throw err;
+      const { rmSync, mkdirSync } = await import('node:fs');
+      console.warn(`[db] embedded database at ${dir} is unreadable (${String((err as Error)?.message ?? err).slice(0, 120)}).`);
+      console.warn('[db] recreating it — dev data only, and it is re-fetched from the real sources on the next cycle.');
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+      pg = new PGlite(dir);
+      await pg.query('SELECT 1');
+    }
     db = {
       driver: 'pglite',
       async query(sql, params = []) {
