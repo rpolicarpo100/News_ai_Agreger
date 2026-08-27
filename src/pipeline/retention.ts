@@ -248,9 +248,15 @@ export async function runRetention(
   notes.push(`${r.supervisorReviewsRemoved} revisão(ões) antigas do supervisor removidas; a mais recente de cada evento é preservada`);
 
   // O Postgres marca as linhas antigas como mortas mas não devolve o espaço ao
-  // sistema de ficheiros sem VACUUM. Sem isto, libertar payloads AUMENTA o
-  // tamanho em disco (medido em produção: 100 MB -> 107 MB) porque um UPDATE
-  // escreve uma nova versão da linha e mantém a antiga.
+  // sistema de ficheiros. Um UPDATE escreve uma nova versão da linha e mantém a
+  // antiga, por isso libertar payloads chegou a AUMENTAR o tamanho em disco
+  // (medido em produção: 100 MB -> 107 MB).
+  //
+  // VACUUM (sem FULL) marca esse espaço como reutilizável DENTRO do ficheiro:
+  // a base deixa de crescer, mas o tamanho em disco não desce. Devolver espaço
+  // ao sistema exigiria VACUUM FULL, que reescreve a tabela e a bloqueia
+  // durante a operação — inaceitável num serviço a servir pedidos. O objectivo
+  // aqui é travar o crescimento, que é o que importa para não atingir 1 GB.
   if (!dryRun && r.payloadsFreed > 0) {
     for (const t of ['article', 'agent_run', 'supervisor_review', 'audit_log', 'event_view', 'event_relation']) {
       try {

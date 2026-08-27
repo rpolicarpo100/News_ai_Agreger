@@ -32,7 +32,27 @@ Também corrigido: lote de processamento de 60 → 400, para a fila drenar em ve
 
 ## Prioridade 1 — Bloqueadores antes de produção
 
-### 1.1 Retenção de dados
+### 1.1 Retenção de dados — IMPLEMENTADO, com uma limitação
+
+Medido em produção: a base passou de 11,9 MB para **107 MB em poucas horas**
+(8853 artigos). A retenção por idade não chegava, porque tudo tinha menos de
+14 dias.
+
+Implementado: tecto absoluto `RETAIN_MAX_PAYLOADS` (2000), que liberta os
+payloads mais antigos independentemente da idade. Libertou 6856 na primeira
+execução, mantendo intacta a proveniência (URL, título, fonte, datas).
+
+**Limitação honesta:** o `VACUUM` que corre a seguir marca o espaço como
+reutilizável dentro do ficheiro — a base **deixa de crescer** — mas não devolve
+espaço ao disco. O tamanho continua a marcar ~107 MB. Para o reduzir seria
+preciso `VACUUM FULL`, que bloqueia a tabela e não é aceitável com o serviço a
+servir pedidos.
+
+Consequência prática: 107 MB de 1 GB, com o crescimento travado. Se precisar de
+recuperar o espaço, corra `VACUUM FULL article;` numa janela de manutenção
+através do `psql` do Render.
+
+### 1.1b Notas anteriores sobre retenção
 **Problema medido:** 953 artigos ocupam 70 MB. Projecção: ~714 MB aos 10 000 artigos, e o plano gratuito do Render dá 1 GB. As tabelas `audit_log`, `agent_run` e `provenance` crescem sempre e nada as limpa.
 
 **Proposta:** política de retenção por tabela, com o princípio de que a auditoria nunca desaparece silenciosamente — é *arquivada* e o resumo mantém-se. Artigos de eventos arquivados perdem o `payload` verbatim (o maior campo) mas mantêm URL, título e proveniência.
