@@ -247,6 +247,22 @@ export async function runRetention(
   }
   notes.push(`${r.supervisorReviewsRemoved} revisão(ões) antigas do supervisor removidas; a mais recente de cada evento é preservada`);
 
+  // O Postgres marca as linhas antigas como mortas mas não devolve o espaço ao
+  // sistema de ficheiros sem VACUUM. Sem isto, libertar payloads AUMENTA o
+  // tamanho em disco (medido em produção: 100 MB -> 107 MB) porque um UPDATE
+  // escreve uma nova versão da linha e mantém a antiga.
+  if (!dryRun && r.payloadsFreed > 0) {
+    for (const t of ['article', 'agent_run', 'supervisor_review', 'audit_log', 'event_view', 'event_relation']) {
+      try {
+        await db.query(`VACUUM (ANALYZE) ${t}`);
+      } catch (err) {
+        // PGlite não suporta VACUUM em todas as versões; não é fatal.
+        notes.push(`VACUUM em ${t} indisponível: ${String((err as Error)?.message ?? err).slice(0, 60)}`);
+        break;
+      }
+    }
+  }
+
   if (!dryRun) {
     const touched = r.payloadsFreed + r.agentRunsRemoved + r.auditArchived +
       r.viewsCompacted + r.staleEventsRemoved + r.graphEdgesRemoved + r.supervisorReviewsRemoved;
