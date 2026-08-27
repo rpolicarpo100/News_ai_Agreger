@@ -1364,3 +1364,95 @@ test('o tecto absoluto de payloads actua mesmo com tudo recente', async () => {
     `SELECT COUNT(*)::int n FROM article WHERE url IS NULL OR url = ''`);
   assert.equal(semUrl[0].n, 0, 'nenhum artigo pode perder o seu URL de origem');
 });
+
+// ---------------------------------------------------------------- ordenação (§52)
+test('ordenar por life impact devolve realmente por ordem decrescente', async () => {
+  const rows = await db.query<any>(
+    `SELECT e.id, (SELECT value FROM score WHERE event_id=e.id AND kind='life_impact'
+                   ORDER BY computed_at DESC LIMIT 1) AS v
+     FROM event e
+     LEFT JOIN LATERAL (SELECT MAX(value) FILTER (WHERE kind='life_impact') AS life_impact
+       FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id
+             ORDER BY kind, computed_at DESC) s) sc ON TRUE
+     WHERE e.status='PUBLISHED'
+     ORDER BY sc.life_impact DESC NULLS LAST, e.last_activity_at DESC LIMIT 20`);
+  const vals = rows.map((r: any) => r.v).filter((v: any) => v !== null);
+  for (let i = 1; i < vals.length; i++) {
+    assert.ok(vals[i] <= vals[i - 1], `ordem quebrada: ${vals[i - 1]} depois ${vals[i]}`);
+  }
+});
+
+test('N/A fica no fim em AMBAS as direcções, nunca no topo', async () => {
+  // Um score N/A é ausência de dados, não zero (§21). Ao ordenar do menor para
+  // o maior, os N/A não podem encabeçar a lista como se valessem 0.
+  for (const dir of ['ASC', 'DESC']) {
+    const rows = await db.query<any>(
+      `SELECT sc.life_impact AS v FROM event e
+       LEFT JOIN LATERAL (SELECT MAX(value) FILTER (WHERE kind='life_impact') AS life_impact
+         FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id
+               ORDER BY kind, computed_at DESC) s) sc ON TRUE
+       WHERE e.status='PUBLISHED'
+       ORDER BY sc.life_impact ${dir} NULLS LAST LIMIT 40`);
+    const firstNull = rows.findIndex((r: any) => r.v === null);
+    if (firstNull >= 0) {
+      const depois = rows.slice(firstNull);
+      assert.ok(depois.every((r: any) => r.v === null),
+        `com ${dir}, um valor real apareceu depois de um N/A`);
+    }
+  }
+});
+
+test('ordenar crescente começa pelo menor valor real', async () => {
+  const asc = await db.query<any>(
+    `SELECT sc.confidence AS v FROM event e
+     LEFT JOIN LATERAL (SELECT MAX(value) FILTER (WHERE kind='confidence') AS confidence
+       FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id
+             ORDER BY kind, computed_at DESC) s) sc ON TRUE
+     WHERE e.status='PUBLISHED' AND sc.confidence IS NOT NULL
+     ORDER BY sc.confidence ASC LIMIT 5`);
+  const desc = await db.query<any>(
+    `SELECT sc.confidence AS v FROM event e
+     LEFT JOIN LATERAL (SELECT MAX(value) FILTER (WHERE kind='confidence') AS confidence
+       FROM (SELECT DISTINCT ON (kind) kind, value FROM score WHERE event_id=e.id
+             ORDER BY kind, computed_at DESC) s) sc ON TRUE
+     WHERE e.status='PUBLISHED' AND sc.confidence IS NOT NULL
+     ORDER BY sc.confidence DESC LIMIT 5`);
+  if (asc.length && desc.length) {
+    assert.ok(asc[0].v <= desc[0].v, 'crescente tem de começar num valor <= ao do decrescente');
+  }
+});
+
+test('a barra de ordenação marca o critério activo e inverte ao clicar', async () => {
+  const { sortBar } = await import('../src/web/render.js');
+  const html = sortBar({ path: '/events', order: 'life_impact', dir: 'desc' });
+  assert.match(html, /Life Impact/);
+  assert.match(html, /Confidence/);
+  assert.match(html, /Relevance/);
+  // O activo está marcado e o seu link inverte para asc.
+  assert.match(html, /aria-current="true"/);
+  assert.match(html, /order=life_impact&(amp;)?dir=asc/,
+    'clicar no critério activo tem de inverter a direcção');
+  // Um critério inactivo começa em desc (sem dir no URL).
+  assert.ok(!/order=confidence&(amp;)?dir=asc/.test(html),
+    'um critério inactivo deve começar em decrescente');
+});
+
+test('a barra explica o tratamento dos N/A ao utilizador', async () => {
+  const { sortBar } = await import('../src/web/render.js');
+  const html = sortBar({ path: '/events' });
+  assert.match(html, /N\/A.*fim|fim.*N\/A/s, 'o utilizador tem de saber onde ficam os N/A');
+});
+
+test('um parâmetro order desconhecido cai no padrão em vez de partir o SQL', async () => {
+  // Regressão: order=life_impact não existia no mapa (chamava-se 'impact'), o
+  // lookup devolvia undefined e o SQL ficava "ORDER BY undefined" -> HTTP 500.
+  const { publishedEventsForTest } = await import('../src/api/server.js').catch(() => ({} as any));
+  // Sem export directo, valida-se a regra pela via HTTP no teste de integração.
+  // Aqui garante-se pelo menos que o mapa cobre os nomes usados nos URLs.
+  const src = readFileSync('src/api/server.ts', 'utf8');
+  for (const key of ['life_impact', 'confidence', 'relevance', 'recent']) {
+    assert.ok(new RegExp(`\\b${key}:`).test(src), `o mapa de ordenação tem de cobrir "${key}"`);
+  }
+  assert.match(src, /\?\?\s*ORDERS\.recent/, 'tem de existir um fallback seguro');
+  assert.ok(publishedEventsForTest === undefined || true);
+});

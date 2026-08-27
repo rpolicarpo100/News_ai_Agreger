@@ -57,6 +57,20 @@ nav.main details.more[open]>summary{color:var(--acc);background:var(--panel)}
 .searchbox{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px 10px}
 .searchbox input{background:none;border:0;color:var(--txt);font-size:14px;width:190px;font-family:var(--sans)}
 .searchbox input::placeholder{color:var(--dim)}
+.sortbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;
+  border-bottom:1px solid var(--line);margin-bottom:4px}
+.sortbar .lbl{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--dim);
+  text-transform:uppercase;white-space:nowrap}
+.sortbar .opts{display:flex;gap:6px;flex-wrap:wrap}
+.sortbar a{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:8px;
+  border:1px solid var(--line2);background:var(--bg2);color:var(--muted);font-size:13.5px;
+  white-space:nowrap;text-decoration:none;transition:.15s}
+.sortbar a:hover{border-color:var(--acc2);color:var(--acc2);text-decoration:none}
+.sortbar a[aria-current=true]{border-color:var(--acc);color:var(--acc);
+  background:rgba(78,231,165,.1);font-weight:600}
+.sortbar .arrow{font-family:var(--mono);font-size:12px;opacity:.9}
+.sortbar .hint{font-size:12.5px;color:var(--dim);margin-left:auto}
+@media(max-width:760px){.sortbar .hint{display:none}.sortbar .lbl{width:100%}}
 h1{font-size:30px;letter-spacing:-.02em;margin:28px 0 6px;font-weight:700;line-height:1.2}
 h2.sec{font-size:12.5px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;font-family:var(--mono);margin:30px 0 12px;display:flex;align-items:center;gap:10px}
 h2.sec{color:var(--muted)}
@@ -210,6 +224,51 @@ function scoreCell(label: string, value: number | null | undefined, cls: string)
     </div>`;
 }
 
+/**
+ * Barra de ordenação (§52 filtros).
+ *
+ * Cada opção alterna a direcção quando já está activa, para que "maior" e
+ * "menor" sejam alcançáveis num só clique. São links normais, não JavaScript:
+ * funcionam sem scripts, são partilháveis e indexáveis.
+ *
+ * Nota sobre N/A: eventos cujo score não pôde ser calculado ficam no fim em
+ * ambas as direcções. Um N/A não é zero — é ausência de dados (§21) — por isso
+ * nunca encabeça uma ordenação crescente.
+ */
+export function sortBar(o: { path: string; order?: string; dir?: string; query?: Record<string, string> }): string {
+  const current = o.order ?? 'recent';
+  const dir = o.dir === 'asc' ? 'asc' : 'desc';
+  const opts: Array<[string, string]> = [
+    ['recent', 'Mais recente'],
+    ['life_impact', 'Life Impact'],
+    ['confidence', 'Confidence'],
+    ['relevance', 'Relevance'],
+  ];
+  // 'impact' é o nome interno; 'life_impact' é o que aparece no URL.
+  const apiName = (k: string) => (k === 'life_impact' ? 'impact' : k);
+
+  const link = (key: string, label: string) => {
+    const active = apiName(key) === apiName(current);
+    // Clicar no critério activo inverte a direcção; noutro, começa em desc.
+    const nextDir = active && dir === 'desc' ? 'asc' : 'desc';
+    const params = new URLSearchParams({ ...(o.query ?? {}) });
+    params.set('order', key);
+    if (nextDir === 'asc') params.set('dir', 'asc'); else params.delete('dir');
+    const arrow = key === 'recent'
+      ? (active && dir === 'asc' ? '↑' : '↓')
+      : (active ? (dir === 'desc' ? '↓ maior' : '↑ menor') : '↓');
+    return `<a href="${esc(o.path)}?${esc(params.toString())}" aria-current="${active}"
+      title="${active ? (dir === 'desc' ? 'Ordenado do maior para o menor — clique para inverter' : 'Ordenado do menor para o maior — clique para inverter') : `Ordenar por ${label}`}">
+      ${esc(label)} <span class="arrow">${arrow}</span></a>`;
+  };
+
+  return `<nav class="sortbar" aria-label="Ordenar resultados">
+    <span class="lbl">Ordenar por</span>
+    <span class="opts">${opts.map(([k, l]) => link(k, l)).join('')}</span>
+    <span class="hint">Eventos sem score calculado (N/A) aparecem no fim.</span>
+  </nav>`;
+}
+
 export function eventCard(e: any): string {
   return `<a class="card" href="${esc(e.url)}">
   <div class="chips">
@@ -258,6 +317,7 @@ export function renderHome(d: any): string {
   return layout({ title: 'Home', current: '/' }, `
   <h1>O que está a acontecer</h1>
   <p class="small dim">Eventos construídos a partir de artigos de fontes reais, agrupados, verificados e pontuados. Cada número desta página tem origem rastreável.</p>
+  ${sortBar({ path: '/events', order: 'recent' })}
   ${pulse}
   ${section('Breaking — últimas 12h', d.breaking)}
   ${section('Top Stories', d.top)}
@@ -270,12 +330,17 @@ export function renderHome(d: any): string {
 }
 
 // ---------------------------------------------------------------- LIST
-export function renderList(o: { title: string; events: any[]; note?: string; grouped?: boolean }): string {
+export function renderList(o: {
+  title: string; events: any[]; note?: string; grouped?: boolean;
+  sort?: { path: string; order?: string; dir?: string; query?: Record<string, string> };
+  current?: string;
+}): string {
   const body = o.events.length
     ? `<div class="grid g3">${o.events.map(eventCard).join('')}</div>`
     : `<div class="empty"><strong>NO VERIFIED DATA AVAILABLE</strong>${esc(o.note ?? 'Não existem eventos publicados que correspondam a este filtro.')}</div>`;
-  return layout({ title: o.title }, `<h1>${esc(o.title)}</h1>
+  return layout({ title: o.title, current: o.current }, `<h1>${esc(o.title)}</h1>
     ${o.note && o.events.length ? `<p class="small dim">${esc(o.note)}</p>` : ''}
+    ${o.sort ? sortBar(o.sort) : ''}
     <div style="margin-top:16px">${body}</div>`);
 }
 

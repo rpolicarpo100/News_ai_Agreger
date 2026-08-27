@@ -49,7 +49,8 @@ app.use(secureHeaders);
 // ---------------------------------------------------------------- helpers
 async function publishedEvents(opts: {
   category?: string; country?: string; limit?: number; offset?: number;
-  minConfidence?: number; minImpact?: number; order?: 'recent' | 'relevance' | 'impact' | 'trending' | 'views';
+  minConfidence?: number; minImpact?: number; order?: 'recent' | 'relevance' | 'impact' | 'trending' | 'views' | 'confidence';
+  dir?: 'asc' | 'desc';
   sinceHours?: number;
 } = {}) {
   const db = await getDb();
@@ -61,13 +62,24 @@ async function publishedEvents(opts: {
   if (opts.minConfidence != null) { params.push(opts.minConfidence); where.push(`COALESCE(sc.confidence,-1) >= $${params.length}`); }
   if (opts.minImpact != null) { params.push(opts.minImpact); where.push(`COALESCE(sc.life_impact,-1) >= $${params.length}`); }
 
-  const order = {
-    recent: 'e.last_activity_at DESC',
-    relevance: 'sc.relevance DESC NULLS LAST, e.last_activity_at DESC',
-    impact: 'sc.life_impact DESC NULLS LAST, e.last_activity_at DESC',
-    trending: 'sc.trending DESC NULLS LAST, e.last_activity_at DESC',
-    views: 'vw.total DESC NULLS LAST, e.last_activity_at DESC',
-  }[opts.order ?? 'recent'];
+  // Direcção da ordenação. NULLS LAST é mantido em AMBAS as direcções de
+  // propósito: um score N/A não é "o valor mais baixo", é ausência de dados
+  // (§21). Ao ordenar do menor para o maior, os N/A não podem aparecer no topo
+  // como se fossem zeros — ficam sempre no fim, em qualquer direcção.
+  const d = opts.dir === 'asc' ? 'ASC' : 'DESC';
+  const byScore = (col: string) => `${col} ${d} NULLS LAST, e.last_activity_at DESC`;
+  const ORDERS: Record<string, string> = {
+    recent: `e.last_activity_at ${d}`,
+    relevance: byScore('sc.relevance'),
+    confidence: byScore('sc.confidence'),
+    impact: byScore('sc.life_impact'),
+    life_impact: byScore('sc.life_impact'),  // alias usado nos URLs
+    trending: byScore('sc.trending'),
+    views: byScore('vw.total'),
+  };
+  // Uma chave desconhecida tem de cair no padrão, nunca produzir `undefined`
+  // dentro do SQL — foi o que aconteceu com order=life_impact e devolveu 500.
+  const order = ORDERS[opts.order ?? 'recent'] ?? ORDERS.recent;
 
   params.push(Math.min(opts.limit ?? 30, 100));
   const limitIdx = params.length;
@@ -129,6 +141,7 @@ api.get('/events', async (req, res) => {
     category: req.query.category as string | undefined,
     country: req.query.country as string | undefined,
     order: req.query.order as any,
+    dir: req.query.dir === 'asc' ? 'asc' : 'desc',
     limit: Number(req.query.limit ?? 30),
     offset: Number(req.query.offset ?? 0),
     minConfidence: req.query.min_confidence ? Number(req.query.min_confidence) : undefined,
@@ -386,13 +399,55 @@ app.get(['/event/:id', '/event/:id/:slug'], async (req, res) => {
   res.type('html').send(renderEvent(data, viewer));
 });
 
+/** Lista global com ordenação (§52). Destino dos controlos "Ordenar por". */
+app.get('/events', async (req, res) => {
+  const order = String(req.query.order ?? 'recent');
+  const dir = req.query.dir === 'asc' ? 'asc' : 'desc';
+  const apiOrder = order === 'life_impact' ? 'impact' : order;
+  const rows = await publishedEvents({ order: apiOrder as any, dir, limit: 60 });
+  const labels: Record<string, string> = {
+    recent: 'mais recentes', impact: 'Life Impact', life_impact: 'Life Impact',
+    confidence: 'Confidence', relevance: 'Relevance',
+  };
+  const sentido = dir === 'asc' ? 'do menor para o maior' : 'do maior para o menor';
+  res.type('html').send(renderList({
+    title: 'Todos os eventos',
+    events: decorate(rows),
+    note: order === 'recent'
+      ? 'Ordenado por actividade mais recente.'
+      : `Ordenado por ${labels[order] ?? order}, ${sentido}. Eventos cujo score é N/A aparecem no fim: um valor desconhecido não é tratado como zero.`,
+    sort: { path: '/events', order, dir },
+  }));
+});
+
 app.get('/category/:cat', async (req, res) => {
-  const rows = await publishedEvents({ category: req.params.cat, limit: 50, order: 'recent' });
-  res.type('html').send(renderList({ title: CATEGORY_LABELS_PT[req.params.cat] ?? req.params.cat, events: decorate(rows) }));
+  const order = String(req.query.order ?? 'recent');
+  const dir = req.query.dir === 'asc' ? 'asc' : 'desc';
+  const cat = String(req.params.cat);
+  const rows = await publishedEvents({
+    category: cat, limit: 50,
+    order: (order === 'life_impact' ? 'impact' : order) as any, dir,
+  });
+  res.type('html').send(renderList({
+    title: CATEGORY_LABELS_PT[cat] ?? cat,
+    events: decorate(rows),
+    sort: { path: `/category/${cat}`, order, dir },
+    current: `/category/${cat}`,
+  }));
 });
 app.get('/country/:cc', async (req, res) => {
-  const rows = await publishedEvents({ country: req.params.cc, limit: 50, order: 'recent' });
-  res.type('html').send(renderList({ title: `País: ${req.params.cc.toUpperCase()}`, events: decorate(rows) }));
+  const order = String(req.query.order ?? 'recent');
+  const dir = req.query.dir === 'asc' ? 'asc' : 'desc';
+  const cc = String(req.params.cc);
+  const rows = await publishedEvents({
+    country: cc, limit: 50,
+    order: (order === 'life_impact' ? 'impact' : order) as any, dir,
+  });
+  res.type('html').send(renderList({
+    title: `País: ${cc.toUpperCase()}`,
+    events: decorate(rows),
+    sort: { path: `/country/${cc}`, order, dir },
+  }));
 });
 app.get('/trending', async (_req, res) => {
   const rows = await publishedEvents({ order: 'trending', limit: 50 });
@@ -402,9 +457,17 @@ app.get('/most-viewed', async (req, res) => {
   const rows = await publishedEvents({ order: 'views', limit: 50, sinceHours: Number(req.query.h ?? 24) });
   res.type('html').send(renderList({ title: `Mais Vistos — últimas ${Number(req.query.h ?? 24)}h`, events: decorate(rows) }));
 });
-app.get('/today', async (_req, res) => {
-  const rows = await publishedEvents({ sinceHours: 24, limit: 80, order: 'relevance' });
-  res.type('html').send(renderList({ title: 'Hoje no Mundo', events: decorate(rows), grouped: true }));
+app.get('/today', async (req, res) => {
+  const order = String(req.query.order ?? 'relevance');
+  const dir = req.query.dir === 'asc' ? 'asc' : 'desc';
+  const rows = await publishedEvents({
+    sinceHours: 24, limit: 80,
+    order: (order === 'life_impact' ? 'impact' : order) as any, dir,
+  });
+  res.type('html').send(renderList({
+    title: 'Hoje no Mundo', events: decorate(rows), grouped: true,
+    sort: { path: '/today', order, dir }, current: '/today',
+  }));
 });
 app.get('/breaking', async (_req, res) => {
   const rows = await publishedEvents({ sinceHours: 6, limit: 40, order: 'recent' });
