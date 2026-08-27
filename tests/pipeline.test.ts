@@ -1346,3 +1346,21 @@ test('N/A é visualmente distinto de um score zero', () => {
   assert.match(css, /empty-bar/, 'N/A tem de ter um tratamento visual próprio');
   assert.match(css, /Dados insuficientes/, 'N/A tem de explicar-se ao passar o rato');
 });
+
+test('o tecto absoluto de payloads actua mesmo com tudo recente', async () => {
+  // Regressão de produção: a base passou de 12 MB para 100 MB em horas, e a
+  // retenção libertava 0 porque todos os artigos tinham menos de 14 dias.
+  const antes = await db.query<any>(
+    `SELECT COUNT(*)::int n FROM article WHERE payload <> '{"archived":true}'`);
+  if (antes[0].n < 3) return;
+  const manter = 2;
+  await retention.runRetention({ payloadDays: 99999, maxPayloads: manter }, false);
+  const depois = await db.query<any>(
+    `SELECT COUNT(*)::int n FROM article WHERE payload <> '{"archived":true}'`);
+  assert.ok(depois[0].n <= manter,
+    `deviam restar no máximo ${manter} payloads, restam ${depois[0].n}`);
+  // E a proveniência continua intacta.
+  const semUrl = await db.query<any>(
+    `SELECT COUNT(*)::int n FROM article WHERE url IS NULL OR url = ''`);
+  assert.equal(semUrl[0].n, 0, 'nenhum artigo pode perder o seu URL de origem');
+});

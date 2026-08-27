@@ -42,6 +42,13 @@ export interface RetentionPolicy {
   graphDays: number;
   /** Dias de revisões do supervisor a manter (a mais recente por evento é sempre guardada). */
   supervisorDays: number;
+  /**
+   * Tecto absoluto de artigos com payload verbatim. A retenção por idade não
+   * chega quando a ingestão é rápida: em produção a base passou de 12 MB para
+   * 100 MB em horas, com tudo ainda dentro da janela de 14 dias. Este limite
+   * actua independentemente da idade, libertando sempre os mais antigos primeiro.
+   */
+  maxPayloads: number;
 }
 
 export const DEFAULT_POLICY: RetentionPolicy = {
@@ -52,6 +59,7 @@ export const DEFAULT_POLICY: RetentionPolicy = {
   staleEventDays: Number(process.env.RETAIN_STALE_EVENT_DAYS ?? 45),
   graphDays: Number(process.env.RETAIN_GRAPH_DAYS ?? 30),
   supervisorDays: Number(process.env.RETAIN_SUPERVISOR_DAYS ?? 30),
+  maxPayloads: Number(process.env.RETAIN_MAX_PAYLOADS ?? 2000),
 };
 
 export interface RetentionReport {
@@ -114,6 +122,24 @@ export async function runRetention(
     await db.query(`UPDATE article SET payload = '{"archived":true}' WHERE ${payloadWhere}`);
   }
   notes.push(`payload verbatim libertado de ${r.payloadsFreed} artigo(s) com mais de ${p.payloadDays} dias; proveniência (URL, título, fonte, datas) mantida`);
+
+  // Tecto absoluto: mesmo que tudo seja recente, só se guardam os N payloads
+  // mais novos. É o que impede a base de encher antes de a idade actuar.
+  if (Number.isFinite(p.maxPayloads) && p.maxPayloads > 0) {
+    const overflowWhere = `
+      payload <> '{"archived":true}'
+      AND id NOT IN (
+        SELECT id FROM article WHERE payload <> '{"archived":true}'
+        ORDER BY ingested_at DESC LIMIT ${Math.floor(p.maxPayloads)})`;
+    const [{ n: overflow }] = await db.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM article WHERE ${overflowWhere}`);
+    const extra = Number(overflow);
+    if (extra > 0) {
+      if (!dryRun) await db.query(`UPDATE article SET payload = '{"archived":true}' WHERE ${overflowWhere}`);
+      r.payloadsFreed += extra;
+      notes.push(`limite de ${p.maxPayloads} payloads excedido: libertados mais ${extra}, mantendo os mais recentes`);
+    }
+  }
 
   // ---------------------------------------------------------------- 2. agent runs
   // Mantém-se sempre a execução mais recente de cada agente por evento, para
