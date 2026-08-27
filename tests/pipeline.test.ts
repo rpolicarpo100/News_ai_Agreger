@@ -1301,3 +1301,48 @@ test('um intervalo inválido é recusado, não interpolado no SQL', async () => 
     () => retention.runRetention({ auditDays: -5 }, true),
     /intervalo inválido/);
 });
+
+// ---------------------------------------------------------------- acessibilidade visual (§73)
+test('todas as cores de texto cumprem o contraste WCAG AA', async () => {
+  // Antes desta verificação, --dim (3.41) e --na (3.03) falhavam o mínimo de
+  // 4.5 — e eram exactamente as cores dos metadados e do "N/A" dos scores.
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const root = css.match(/:root\{[\s\S]*?\}/)?.[0] ?? '';
+
+  const hex = (name: string): string => {
+    const m = root.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`));
+    assert.ok(m, `variável ${name} não encontrada`);
+    return m![1];
+  };
+  const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = (h: string) => {
+    const n = h.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a: string, b: string) => {
+    const [x, y] = [lum(a), lum(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+
+  const panel = hex('--panel'); // fundo mais claro = pior caso
+  for (const name of ['--txt', '--muted', '--dim', '--na', '--acc', '--acc2', '--warn', '--bad']) {
+    const r = ratio(hex(name), panel);
+    assert.ok(r >= 4.5, `${name} (${hex(name)}) tem contraste ${r.toFixed(2)}, abaixo do mínimo AA de 4.5`);
+  }
+});
+
+test('nenhum tamanho de letra é ilegível', () => {
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const sizes = [...css.matchAll(/font-size:\s*([0-9.]+)px/g)].map((m) => Number(m[1]));
+  assert.ok(sizes.length > 10, 'esperava encontrar tamanhos definidos');
+  const tiny = sizes.filter((s) => s < 10);
+  assert.deepEqual(tiny, [], `tamanhos abaixo de 10px são ilegíveis: ${tiny.join(', ')}`);
+});
+
+test('N/A é visualmente distinto de um score zero', () => {
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  // Um zero é um resultado calculado; N/A é ausência de dados (§21).
+  assert.match(css, /empty-bar/, 'N/A tem de ter um tratamento visual próprio');
+  assert.match(css, /Dados insuficientes/, 'N/A tem de explicar-se ao passar o rato');
+});
