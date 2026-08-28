@@ -25,20 +25,30 @@ const CSS = `
   --on-acc:#07090d;   /* texto sobre fundo --acc */
 }
 
-/* Tema claro. Os mesmos contrastes foram medidos contra branco: nenhuma cor
-   desce abaixo de 4.5. Os acentos são versões saturadas e escurecidas — o
-   verde e o azul do tema escuro sobre branco dariam 1.6 e seriam ilegíveis. */
+/* Tema claro.
+   A primeira versão cumpria o mínimo AA mas lia-se mal, por duas razões que o
+   teste de contraste mínimo não apanha:
+
+   1. Painel branco sobre fundo quase branco dava 1.07 de contraste entre
+      superfícies — os cartões praticamente desapareciam. O fundo foi
+      escurecido para #e2e7ef, o que dá 1.24 e faz o branco destacar-se.
+   2. Texto a 17.8 sobre branco causa halation: em fundo claro o excesso de
+      contraste faz o texto parecer vibrar e cansa em leitura longa. Baixado
+      para 13.2, dentro da faixa confortável de 12–15.
+
+   Todas as cores foram validadas sobre as TRÊS superfícies (panel, bg, bg2),
+   não apenas sobre branco, e o texto branco sobre cada acento passa 7.0. */
 [data-theme="light"]{
-  --bg:#f5f7fa; --bg2:#eef1f6; --panel:#ffffff; --line:#dde3ec; --line2:#c3ccd9;
-  --txt:#111823;      /* 17.8 */
-  --muted:#4a5666;    /*  7.5 */
-  --dim:#5c6875;      /*  5.7 */
-  --na:#5c6875;       /*  5.7 */
-  --acc:#0a7a4f;      /*  5.4 */
-  --acc2:#0b62c4;     /*  5.9 */
-  --warn:#8a5a00;     /*  5.9 */
-  --bad:#c02636;      /*  5.9 */
-  --shadow:rgba(15,25,45,.12);
+  --bg:#e2e7ef; --bg2:#eef2f7; --panel:#ffffff; --line:#ccd5e0; --line2:#a9b5c6;
+  --txt:#26313d;      /* 13.2 sobre branco — legível sem vibrar */
+  --muted:#4a5768;    /*  7.4 */
+  --dim:#5b6878;      /*  5.7 */
+  --na:#5b6878;       /*  5.7 */
+  --acc:#06663f;      /*  7.1 — branco por cima passa 7.05 */
+  --acc2:#0a55ab;     /*  7.2 */
+  --warn:#7a5000;     /*  7.1 */
+  --bad:#ab2130;      /*  7.0 */
+  --shadow:rgba(20,35,60,.10);
   --on-acc:#ffffff;
 }
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
@@ -111,10 +121,18 @@ h3{font-size:16.5px;margin:22px 0 9px}
 .g3{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
 .g4{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 .g2{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;transition:.15s}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;
+  display:flex;flex-direction:column;gap:11px;transition:.15s}
+[data-theme="light"] .card{box-shadow:0 1px 3px var(--shadow)}
+[data-theme="light"] .panel{box-shadow:0 1px 3px var(--shadow)}
+[data-theme="light"] .evhead{box-shadow:0 2px 8px var(--shadow)}
+/* O cabeçalho fixo precisa de se separar do conteúdo que passa por baixo. */
+[data-theme="light"] header.top{box-shadow:0 1px 4px var(--shadow)}
 a.card:hover{border-color:var(--acc2);transform:translateY(-2px);box-shadow:0 6px 24px var(--shadow)}
 .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;padding:3px 8px;border-radius:5px;border:1px solid var(--line2);color:var(--muted);text-transform:uppercase}
+.chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;padding:3px 8px;border-radius:5px;
+  border:1px solid var(--line2);color:var(--muted);text-transform:uppercase}
+[data-theme="light"] .chip{background:var(--bg2)}
 .chip.cat{color:var(--acc2);border-color:rgba(78,168,255,.35);background:rgba(78,168,255,.07)}
 .chip.FRESH{color:var(--acc);border-color:rgba(61,220,151,.4)}
 .chip.RECENT{color:#9fe8c4;border-color:#2a4a3c}

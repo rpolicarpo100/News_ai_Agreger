@@ -1529,6 +1529,78 @@ test('o idioma é detectado do browser e normalizado com segurança', () => {
   assert.equal(i18n.normaliseLang(null), 'pt');
 });
 
+test('as superfícies do tema claro distinguem-se entre si', () => {
+  // O teste de contraste mínimo não apanha isto: painel branco sobre fundo
+  // quase branco cumpre AA para o texto, mas os cartões desaparecem. A
+  // primeira versão do tema claro tinha 1.07 entre painel e fundo.
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const light = css.match(/\[data-theme="light"\]\{[\s\S]*?\}/)?.[0] ?? '';
+  const hex = (n: string) => light.match(new RegExp(`${n}:\\s*(#[0-9a-fA-F]{6})`))![1];
+  const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = (h: string) => {
+    const n = h.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a: string, b: string) => {
+    const [x, y] = [lum(a), lum(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  const sep = ratio(hex('--panel'), hex('--bg'));
+  assert.ok(sep >= 1.2,
+    `painel e fundo têm de distinguir-se: ${sep.toFixed(2)} (mínimo 1.20, senão os cartões somem)`);
+});
+
+test('o texto do tema claro não é forte de mais (halation)', () => {
+  // Em fundo claro, contraste excessivo faz o texto parecer vibrar e cansa em
+  // leitura longa. A primeira versão tinha 17.8; a faixa confortável é 12–15.
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const light = css.match(/\[data-theme="light"\]\{[\s\S]*?\}/)?.[0] ?? '';
+  const hex = (n: string) => light.match(new RegExp(`${n}:\\s*(#[0-9a-fA-F]{6})`))![1];
+  const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = (h: string) => {
+    const n = h.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a: string, b: string) => {
+    const [x, y] = [lum(a), lum(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  const r = ratio(hex('--txt'), hex('--panel'));
+  assert.ok(r >= 12 && r <= 16,
+    `texto principal do tema claro em ${r.toFixed(1)} — fora da faixa confortável 12–16`);
+});
+
+test('as cores do tema claro funcionam sobre TODAS as superfícies', () => {
+  // Verificar só contra o painel branco deixa passar cores que ficam ilegíveis
+  // sobre o fundo cinzento da página.
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const light = css.match(/\[data-theme="light"\]\{[\s\S]*?\}/)?.[0] ?? '';
+  const hex = (n: string) => light.match(new RegExp(`${n}:\\s*(#[0-9a-fA-F]{6})`))![1];
+  const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = (h: string) => {
+    const n = h.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a: string, b: string) => {
+    const [x, y] = [lum(a), lum(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  for (const surf of ['--panel', '--bg', '--bg2']) {
+    for (const fg of ['--txt', '--muted', '--dim', '--na', '--acc', '--acc2', '--warn', '--bad']) {
+      const r = ratio(hex(fg), hex(surf));
+      assert.ok(r >= 4.5, `tema claro: ${fg} sobre ${surf} = ${r.toFixed(2)}, abaixo de 4.5`);
+    }
+  }
+  // Botões: texto branco sobre cada acento.
+  for (const acc of ['--acc', '--acc2', '--bad']) {
+    const r = ratio('#ffffff', hex(acc));
+    assert.ok(r >= 4.5, `texto branco sobre ${acc} = ${r.toFixed(2)}`);
+  }
+});
+
 test('o tema claro cumpre WCAG AA tal como o escuro', () => {
   const css = readFileSync('src/web/render.ts', 'utf8');
   const light = css.match(/\[data-theme="light"\]\{[\s\S]*?\}/)?.[0] ?? '';
