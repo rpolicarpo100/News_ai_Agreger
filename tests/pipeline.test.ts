@@ -1307,7 +1307,8 @@ test('todas as cores de texto cumprem o contraste WCAG AA', async () => {
   // Antes desta verificação, --dim (3.41) e --na (3.03) falhavam o mínimo de
   // 4.5 — e eram exactamente as cores dos metadados e do "N/A" dos scores.
   const css = readFileSync('src/web/render.ts', 'utf8');
-  const root = css.match(/:root\{[\s\S]*?\}/)?.[0] ?? '';
+  // O bloco é agora ':root, [data-theme="dark"]{...}'.
+  const root = css.match(/:root[^{]*\{[\s\S]*?\}/)?.[0] ?? '';
 
   const hex = (name: string): string => {
     const m = root.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`));
@@ -1455,4 +1456,136 @@ test('um parâmetro order desconhecido cai no padrão em vez de partir o SQL', a
   }
   assert.match(src, /\?\?\s*ORDERS\.recent/, 'tem de existir um fallback seguro');
   assert.ok(publishedEventsForTest === undefined || true);
+});
+
+// ---------------------------------------------------------------- i18n e tema (§61, §73)
+const i18n = await import('../src/web/i18n.js');
+
+test('a tradução NUNCA altera factos, números ou evidências (§61)', async () => {
+  // A regra central: um título de fonte inglesa continua em inglês com a UI em
+  // português, e vice-versa. Traduzi-lo seria reescrever a evidência.
+  const { renderEvent } = await import('../src/web/render.js');
+  const [ev] = await db.query<any>(`SELECT id FROM event WHERE status='PUBLISHED' LIMIT 1`);
+  if (!ev) return;
+  const { eventDetail } = await import('../src/api/server.js');
+  const d = await eventDetail(ev.id);
+  if (!d) return;
+
+  const pt = renderEvent(d, undefined, { lang: 'pt', theme: 'dark', path: '/' });
+  const en = renderEvent(d, undefined, { lang: 'en', theme: 'dark', path: '/' });
+
+  // O título do evento (texto literal da fonte) tem de ser idêntico nos dois.
+  const title = d.event.title;
+  const escaped = title.replace(/[&<>"']/g, (c: string) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  assert.ok(pt.includes(escaped), 'o título tem de aparecer na versão PT');
+  assert.ok(en.includes(escaped), 'o MESMO título tem de aparecer na versão EN, não traduzido');
+
+  // Os URLs das fontes também não mudam.
+  for (const a of d.articles.slice(0, 3)) {
+    assert.ok(pt.includes(a.url) && en.includes(a.url), 'os URLs de origem não podem mudar com o idioma');
+  }
+});
+
+test('a interface muda de idioma, o conteúdo não', () => {
+  const pt = i18n.translator('pt');
+  const en = i18n.translator('en');
+  assert.equal(pt('nav.today'), 'Hoje');
+  assert.equal(en('nav.today'), 'Today');
+  assert.notEqual(pt('home.title'), en('home.title'));
+  // Categorias são rótulos de interface, logo traduzíveis.
+  assert.equal(pt.cat('natural_events'), 'Eventos Naturais');
+  assert.equal(en.cat('natural_events'), 'Natural Events');
+});
+
+test('uma chave em falta aparece visivelmente, não desaparece', () => {
+  const t = i18n.translator('en');
+  assert.equal(t('chave.inexistente'), 'chave.inexistente');
+});
+
+test('ambos os dicionários cobrem exactamente as mesmas chaves', () => {
+  const src = readFileSync('src/web/i18n.ts', 'utf8');
+  const block = (name: string) => {
+    const i = src.indexOf(`const ${name}: Dict = {`);
+    const j = src.indexOf('\n};', i);
+    return new Set([...src.slice(i, j).matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1]));
+  };
+  const pt = block('PT'), en = block('EN');
+  const faltaEn = [...pt].filter((k) => !en.has(k));
+  const faltaPt = [...en].filter((k) => !pt.has(k));
+  assert.deepEqual(faltaEn, [], `chaves sem tradução EN: ${faltaEn.join(', ')}`);
+  assert.deepEqual(faltaPt, [], `chaves sem tradução PT: ${faltaPt.join(', ')}`);
+  assert.ok(pt.size > 50, 'esperava um dicionário substancial');
+});
+
+test('o idioma é detectado do browser e normalizado com segurança', () => {
+  assert.equal(i18n.langFromHeader('en-GB,en;q=0.9'), 'en');
+  assert.equal(i18n.langFromHeader('pt-PT,pt;q=0.9,en;q=0.8'), 'pt');
+  assert.equal(i18n.langFromHeader('de-DE'), 'pt', 'idioma não suportado cai no padrão');
+  assert.equal(i18n.langFromHeader(undefined), 'pt');
+  // Entradas hostis não passam.
+  assert.equal(i18n.normaliseLang('<script>'), 'pt');
+  assert.equal(i18n.normaliseLang('en'), 'en');
+  assert.equal(i18n.normaliseLang(null), 'pt');
+});
+
+test('o tema claro cumpre WCAG AA tal como o escuro', () => {
+  const css = readFileSync('src/web/render.ts', 'utf8');
+  const light = css.match(/\[data-theme="light"\]\{[\s\S]*?\}/)?.[0] ?? '';
+  assert.ok(light, 'o tema claro tem de existir');
+  const hex = (n: string) => {
+    const m = light.match(new RegExp(`${n}:\\s*(#[0-9a-fA-F]{6})`));
+    assert.ok(m, `${n} em falta no tema claro`);
+    return m![1];
+  };
+  const lin = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = (h: string) => {
+    const n = h.replace('#', '');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a: string, b: string) => {
+    const [x, y] = [lum(a), lum(b)];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  const panel = hex('--panel');
+  for (const n of ['--txt', '--muted', '--dim', '--na', '--acc', '--acc2', '--warn', '--bad']) {
+    const r = ratio(hex(n), panel);
+    assert.ok(r >= 4.5, `tema claro: ${n} (${hex(n)}) tem ${r.toFixed(2)}, abaixo de 4.5`);
+  }
+});
+
+test('o tema é normalizado e só aceita valores conhecidos', () => {
+  assert.equal(i18n.normaliseTheme('light'), 'light');
+  assert.equal(i18n.normaliseTheme('dark'), 'dark');
+  assert.equal(i18n.normaliseTheme('"><script>'), 'dark', 'valor hostil cai no padrão');
+  assert.equal(i18n.normaliseTheme(undefined), 'dark');
+});
+
+test('o atributo lang do HTML acompanha o idioma escolhido', async () => {
+  const { pageShell } = await import('../src/web/render.js');
+  const pt = pageShell({ title: 'x', body: '', lang: 'pt', theme: 'dark' });
+  const en = pageShell({ title: 'x', body: '', lang: 'en', theme: 'light' });
+  assert.match(pt, /<html lang="pt-PT" data-theme="dark"/);
+  assert.match(en, /<html lang="en" data-theme="light"/);
+});
+
+test('todas as páginas HTML herdam idioma e tema (regressão)', async () => {
+  // Regressão: /about, /status, /support e /map ignoravam as preferências e
+  // apareciam sempre em pt/dark, mesmo com os cookies definidos.
+  const src = readFileSync('src/api/server.ts', 'utf8');
+  const rotas = [
+    ["renderAbout", '/about'],
+    ["renderStatus", '/status'],
+    ["renderMap", '/map'],
+    ["renderSupport", '/support'],
+    ["renderBrief", '/brief'],
+  ];
+  for (const [fn, rota] of rotas) {
+    const chamada = new RegExp(`${fn}\\([^;]*prefsOf\\(req\\)`, 's');
+    assert.ok(chamada.test(src), `${rota} tem de passar prefsOf(req) a ${fn}`);
+  }
+  // E nenhuma rota HTML pode usar _req, senão não consegue ler as preferências.
+  const comUnderscore = [...src.matchAll(/app\.get\('(\/[a-z-]*)'[^)]*\(_req/g)].map((m) => m[1]);
+  assert.deepEqual(comUnderscore, [], `rotas que ignoram o pedido: ${comUnderscore.join(', ')}`);
 });

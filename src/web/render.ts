@@ -5,23 +5,42 @@
  * gracefully. Every numeric shown is either a stored value or the literal N/A.
  */
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
+import { translator, type Lang, type Theme, type Translator } from './i18n.js';
 
 export function esc(s: unknown): string {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
 const CSS = `
-:root{
-  /* Contrastes verificados contra --panel (#141a24), o fundo mais claro.
-     WCAG AA exige 4.5 para texto normal. Antes, --dim tinha 3.41 e --na 3.03:
-     ambos falhavam, e eram usados exactamente nos metadados e no "N/A" dos
-     scores — a informação que mais precisa de ser lida. */
+/* Tema escuro (omissão). Contrastes verificados contra --panel, o fundo mais
+   claro do tema. WCAG AA exige 4.5 para texto normal. */
+:root, [data-theme="dark"]{
   --bg:#0a0e14; --bg2:#0f141c; --panel:#141a24; --line:#2a3340; --line2:#3a4553;
-  --txt:#f2f5fa;      /* 16.2 */
-  --muted:#aab4c6;    /*  8.7 */
-  --dim:#8f99ab;      /*  6.3 */
-  --na:#909aac;       /*  6.4 */
+  --txt:#f2f5fa;      /* 16.0 */
+  --muted:#aab4c6;    /*  8.4 */
+  --dim:#8f99ab;      /*  6.1 */
+  --na:#909aac;       /*  6.2 */
   --acc:#4ee7a5; --acc2:#6cb8ff; --warn:#ffc069; --bad:#ff7b87;
+  --shadow:rgba(0,0,0,.45);
+  --on-acc:#07090d;   /* texto sobre fundo --acc */
+}
+
+/* Tema claro. Os mesmos contrastes foram medidos contra branco: nenhuma cor
+   desce abaixo de 4.5. Os acentos são versões saturadas e escurecidas — o
+   verde e o azul do tema escuro sobre branco dariam 1.6 e seriam ilegíveis. */
+[data-theme="light"]{
+  --bg:#f5f7fa; --bg2:#eef1f6; --panel:#ffffff; --line:#dde3ec; --line2:#c3ccd9;
+  --txt:#111823;      /* 17.8 */
+  --muted:#4a5666;    /*  7.5 */
+  --dim:#5c6875;      /*  5.7 */
+  --na:#5c6875;       /*  5.7 */
+  --acc:#0a7a4f;      /*  5.4 */
+  --acc2:#0b62c4;     /*  5.9 */
+  --warn:#8a5a00;     /*  5.9 */
+  --bad:#c02636;      /*  5.9 */
+  --shadow:rgba(15,25,45,.12);
+  --on-acc:#ffffff;
+}
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --sans:system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
 }
@@ -33,7 +52,7 @@ a{color:inherit;text-decoration:none}
 .q a:hover,.panel a:hover,footer a:hover{text-decoration-color:var(--acc2);color:var(--acc2)}
 a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--acc2);outline-offset:2px}
 .wrap{max-width:1320px;margin:0 auto;padding:0 20px}
-header.top{position:sticky;top:0;z-index:50;background:rgba(7,9,13,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+header.top{position:sticky;top:0;z-index:50;background:var(--bg);border-bottom:1px solid var(--line)}
 .topbar{display:flex;align-items:center;gap:18px;height:64px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.02em;white-space:nowrap}
 .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--acc);box-shadow:0 0 12px var(--acc)}
@@ -51,12 +70,23 @@ nav.main details.more>summary:hover{color:var(--txt);background:var(--panel)}
 nav.main details.more[open]>summary{color:var(--acc);background:var(--panel)}
 .more-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:210px;background:var(--panel);
   border:1px solid var(--line2);border-radius:11px;padding:7px;display:flex;flex-direction:column;gap:2px;
-  box-shadow:0 12px 32px rgba(0,0,0,.55);z-index:60}
+  box-shadow:0 12px 32px var(--shadow);z-index:60}
 .more-menu a{padding:8px 11px;border-radius:7px;font-size:14px;color:var(--muted);white-space:nowrap}
 .more-menu a:hover{background:var(--bg2);color:var(--txt)}
 .searchbox{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px 10px}
 .searchbox input{background:none;border:0;color:var(--txt);font-size:14px;width:190px;font-family:var(--sans)}
 .searchbox input::placeholder{color:var(--dim)}
+.switches{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.switch{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+.switch a{padding:5px 9px;font-family:var(--mono);font-size:11.5px;color:var(--dim);
+  background:var(--bg2);text-decoration:none;transition:.15s;letter-spacing:.03em}
+.switch a:hover{color:var(--txt);background:var(--panel);text-decoration:none}
+.switch a[aria-current=true]{background:var(--acc);color:var(--on-acc);font-weight:700}
+.themebtn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:30px;
+  border:1px solid var(--line2);border-radius:8px;background:var(--bg2);color:var(--muted);
+  font-size:15px;text-decoration:none;transition:.15s}
+.themebtn:hover{border-color:var(--acc2);color:var(--acc2);text-decoration:none}
+@media(max-width:900px){.switches .switch{display:none}}
 .sortbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0;
   border-bottom:1px solid var(--line);margin-bottom:4px}
 .sortbar .lbl{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--dim);
@@ -81,8 +111,8 @@ h3{font-size:16.5px;margin:22px 0 9px}
 .g3{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
 .g4{grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 .g2{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
-.card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;transition:.15s}
-a.card:hover{border-color:var(--acc2);transform:translateY(-2px);box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;transition:.15s}
+a.card:hover{border-color:var(--acc2);transform:translateY(-2px);box-shadow:0 6px 24px var(--shadow)}
 .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;padding:3px 8px;border-radius:5px;border:1px solid var(--line2);color:var(--muted);text-transform:uppercase}
 .chip.cat{color:var(--acc2);border-color:rgba(78,168,255,.35);background:rgba(78,168,255,.07)}
@@ -119,7 +149,7 @@ td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
 details{border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:var(--bg2);margin:8px 0}
 summary{cursor:pointer;font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
 summary:hover{color:var(--txt)}
-.evhead{border:1px solid var(--line);border-radius:14px;padding:20px;background:linear-gradient(160deg,#101722,#0a0d13)}
+.evhead{border:1px solid var(--line);border-radius:14px;padding:20px;background:var(--panel)}
 .q{border-left:2px solid var(--line2);padding-left:14px;margin:14px 0}
 .q h3{font-family:var(--mono);font-size:12.5px;letter-spacing:.12em;color:var(--acc2);text-transform:uppercase;margin:0 0 6px}
 ul.clean{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
@@ -137,34 +167,38 @@ footer a{color:var(--muted)} footer a:hover{color:var(--txt)}
 .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12.5px;padding:5px 11px;border-radius:20px;border:1px solid var(--line2);color:var(--muted)}
 .pill b{color:var(--txt);font-weight:600}
 .ok{color:var(--acc)} .warnc{color:var(--warn)} .badc{color:var(--bad)}
-svg.map{width:100%;height:auto;background:#080b10;border:1px solid var(--line);border-radius:12px}
+svg.map{width:100%;height:auto;background:var(--bg2);border:1px solid var(--line);border-radius:12px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 @media(max-width:760px){.scores{grid-template-columns:repeat(2,1fr)}.searchbox{display:none}h1{font-size:21px}}
 `;
 
 /** Navegação principal — só o que cabe sem cortar. */
 const NAV: Array<[string, string]> = [
-  ['/', 'Home'], ['/today', 'Hoje'], ['/breaking', 'Breaking'], ['/trending', 'Trending'],
-  ['/map', 'Mapa'], ['/brief', 'Daily Brief'], ['/my', 'My Intelligence'],
+  ['/', 'nav.home'], ['/today', 'nav.today'], ['/breaking', 'nav.breaking'], ['/trending', 'nav.trending'],
+  ['/map', 'nav.map'], ['/brief', 'nav.brief'], ['/my', 'nav.my'],
 ];
 
 /** Secundária: categorias e páginas de contexto, num menu que não corta. */
 const NAV_MORE: Array<[string, string]> = [
-  ['/most-viewed', 'Mais Vistos'],
-  ['/category/natural_events', 'Eventos Naturais'],
-  ['/category/war_conflict', 'Guerra e Conflito'],
-  ['/category/politics', 'Política'],
-  ['/category/economy', 'Economia'],
-  ['/category/technology', 'Tecnologia'],
-  ['/category/health', 'Saúde'],
-  ['/category/science', 'Ciência'],
-  ['/status', 'Estado do sistema'],
-  ['/about', 'Metodologia'],
+  ['/most-viewed', 'nav.mostViewed'],
+  ['/category/natural_events', 'natural_events'],
+  ['/category/war_conflict', 'war_conflict'],
+  ['/category/politics', 'politics'],
+  ['/category/economy', 'economy'],
+  ['/category/technology', 'technology'],
+  ['/category/health', 'health'],
+  ['/category/science', 'science'],
+  ['/status', 'nav.status'],
+  ['/about', 'nav.about'],
 ];
 
-interface LayoutOpts {
+export interface LayoutOpts {
   title: string; description?: string; current?: string; jsonLd?: object;
   canonical?: string; extraCss?: string;
+  /** Idioma e tema vêm do pedido; se ausentes usa-se o padrão. */
+  lang?: Lang; theme?: Theme;
+  /** Caminho actual, para os selectores preservarem a página. */
+  path?: string;
 }
 
 /** Shared shell so every page (public, account, admin-adjacent) looks identical. */
@@ -172,8 +206,24 @@ export function pageShell(o: LayoutOpts & { body: string }): string {
   return layout(o, o.body);
 }
 
+/** Preferências de apresentação vindas do pedido. */
+export interface Prefs { lang: Lang; theme: Theme; path: string }
+export const DEFAULT_PREFS: Prefs = { lang: 'pt', theme: 'dark', path: '/' };
+
+/** Constrói o URL da página actual trocando um parâmetro. */
+function withParam(path: string, key: string, value: string): string {
+  const [base, qs] = (path || '/').split('?');
+  const params = new URLSearchParams(qs ?? '');
+  params.set(key, value);
+  return `${base}?${params.toString()}`;
+}
+
 function layout(o: LayoutOpts, body: string): string {
-  return `<!doctype html><html lang="pt-PT"><head>
+  const t = translator(o.lang ?? 'pt');
+  const theme: Theme = o.theme ?? 'dark';
+  const path = o.path ?? '/';
+  const htmlLang = t.lang === 'pt' ? 'pt-PT' : 'en';
+  return `<!doctype html><html lang="${htmlLang}" data-theme="${theme}"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(o.title)} — Global News Intelligence</title>
 <meta name="description" content="${esc(o.description ?? 'Inteligência noticiosa a partir de fontes reais, com proveniência, verificação e auditoria.')}">
@@ -185,29 +235,39 @@ ${o.canonical ? `<link rel="canonical" href="${esc(o.canonical)}">` : ''}
 <style>${CSS}${o.extraCss ?? ''}</style>
 ${o.jsonLd ? `<script type="application/ld+json">${JSON.stringify(o.jsonLd).replace(/</g, '\\u003c')}</script>` : ''}
 </head><body>
-<a href="#main" style="position:absolute;left:-9999px" onfocus="this.style.left='10px';this.style.top='10px';this.style.zIndex='99';this.style.background='#11161f';this.style.padding='8px'">Saltar para o conteúdo</a>
+<a href="#main" style="position:absolute;left:-9999px" onfocus="this.style.left='10px';this.style.top='10px';this.style.zIndex='99';this.style.background='var(--panel)';this.style.padding='8px'">${esc(t('nav.skip'))}</a>
 <header class="top"><div class="wrap"><div class="topbar">
   <a class="brand" href="/"><span class="dot" aria-hidden="true"></span><span>GLOBAL NEWS<small>INTELLIGENCE</small></span></a>
-  <nav class="main" aria-label="Navegação principal">
-    ${NAV.map(([h, l]) => `<a href="${h}"${o.current === h ? ' aria-current="page"' : ''}>${l}</a>`).join('')}
+  <nav class="main" aria-label="${esc(t('nav.mainLabel'))}">
+    ${NAV.map(([h, k]) => `<a href="${h}"${o.current === h ? ' aria-current="page"' : ''}>${esc(t(k))}</a>`).join('')}
     <details class="more">
-      <summary aria-label="Mais secções">Mais ▾</summary>
+      <summary aria-label="${esc(t('nav.moreLabel'))}">${esc(t('nav.more'))} ▾</summary>
       <div class="more-menu">
-        ${NAV_MORE.map(([h, l]) => `<a href="${h}"${o.current === h ? ' aria-current="page"' : ''}>${l}</a>`).join('')}
+        ${NAV_MORE.map(([h, k]) => `<a href="${h}"${o.current === h ? ' aria-current="page"' : ''}>${esc(k.startsWith('nav.') ? t(k) : t.cat(k))}</a>`).join('')}
       </div>
     </details>
   </nav>
+  <div class="switches">
+    <div class="switch" role="group" aria-label="${esc(t('ui.language'))}">
+      <a href="${esc(withParam(path, 'lang', 'pt'))}" aria-current="${t.lang === 'pt'}" hreflang="pt" title="Português">PT</a>
+      <a href="${esc(withParam(path, 'lang', 'en'))}" aria-current="${t.lang === 'en'}" hreflang="en" title="English">EN</a>
+    </div>
+    <a class="themebtn" href="${esc(withParam(path, 'theme', theme === 'dark' ? 'light' : 'dark'))}"
+       title="${esc(theme === 'dark' ? t('ui.themeToggle') : t('ui.themeToggleDark'))}"
+       aria-label="${esc(theme === 'dark' ? t('ui.themeToggle') : t('ui.themeToggleDark'))}">${theme === 'dark' ? '☀' : '☾'}</a>
+  </div>
   <form class="searchbox" action="/search" method="get" role="search">
     <span aria-hidden="true" class="dim">⌕</span>
-    <label for="q" class="visually-hidden" style="position:absolute;left:-9999px">Pesquisar eventos</label>
-    <input id="q" name="q" placeholder="Pesquisar eventos…" autocomplete="off">
+    <label for="q" style="position:absolute;left:-9999px">${esc(t('nav.searchLabel'))}</label>
+    <input id="q" name="q" placeholder="${esc(t('nav.search'))}" autocomplete="off">
+    <input type="hidden" name="lang" value="${esc(t.lang)}">
   </form>
 </div></div></header>
 <main id="main"><div class="wrap">${body}</div></main>
 <footer><div class="wrap">
-  <p><strong>Global News Intelligence</strong> — dados reais, fontes reais, eventos reais, rastreabilidade completa.</p>
-  <p class="dim">Esta plataforma não inventa acontecimentos. Quando não existem dados verificados, mostra <span class="mono">NO VERIFIED DATA AVAILABLE</span>. Quando as fontes divergem, mostra o conflito. Quando um score não pode ser calculado, mostra <span class="mono">N/A</span>.</p>
-  <p><a href="/about">Metodologia</a> · <a href="/status">Estado do sistema</a> · <a href="/api/events">API</a> · <a href="/support" style="color:var(--acc)">☕ Pay for a coffee</a> · <a href="/sitemap.xml">Sitemap</a></p>
+  <p><strong>Global News Intelligence</strong> — ${esc(t('foot.tagline'))}</p>
+  <p class="dim">${esc(t('foot.disclaimer'))}</p>
+  <p><a href="/about">${esc(t('foot.method'))}</a> · <a href="/status">${esc(t('foot.status'))}</a> · <a href="/api/events">${esc(t('foot.api'))}</a> · <a href="/support" style="color:var(--acc)">${esc(t('foot.support'))}</a> · <a href="/sitemap.xml">${esc(t('foot.sitemap'))}</a></p>
 </div></footer></body></html>`;
 }
 
@@ -235,14 +295,15 @@ function scoreCell(label: string, value: number | null | undefined, cls: string)
  * ambas as direcções. Um N/A não é zero — é ausência de dados (§21) — por isso
  * nunca encabeça uma ordenação crescente.
  */
-export function sortBar(o: { path: string; order?: string; dir?: string; query?: Record<string, string> }): string {
+export function sortBar(o: { path: string; order?: string; dir?: string; query?: Record<string, string>; lang?: Lang }): string {
+  const t = translator(o.lang ?? 'pt');
   const current = o.order ?? 'recent';
   const dir = o.dir === 'asc' ? 'asc' : 'desc';
   const opts: Array<[string, string]> = [
-    ['recent', 'Mais recente'],
-    ['life_impact', 'Life Impact'],
-    ['confidence', 'Confidence'],
-    ['relevance', 'Relevance'],
+    ['recent', t('sort.recent')],
+    ['life_impact', t('sort.impact')],
+    ['confidence', t('sort.confidence')],
+    ['relevance', t('sort.relevance')],
   ];
   // 'impact' é o nome interno; 'life_impact' é o que aparece no URL.
   const apiName = (k: string) => (k === 'life_impact' ? 'impact' : k);
@@ -256,16 +317,16 @@ export function sortBar(o: { path: string; order?: string; dir?: string; query?:
     if (nextDir === 'asc') params.set('dir', 'asc'); else params.delete('dir');
     const arrow = key === 'recent'
       ? (active && dir === 'asc' ? '↑' : '↓')
-      : (active ? (dir === 'desc' ? '↓ maior' : '↑ menor') : '↓');
+      : (active ? (dir === 'desc' ? `↓ ${t('sort.desc')}` : `↑ ${t('sort.asc')}`) : '↓');
     return `<a href="${esc(o.path)}?${esc(params.toString())}" aria-current="${active}"
-      title="${active ? (dir === 'desc' ? 'Ordenado do maior para o menor — clique para inverter' : 'Ordenado do menor para o maior — clique para inverter') : `Ordenar por ${label}`}">
+      title="${esc(active ? (dir === 'desc' ? t('sort.tipDesc') : t('sort.tipAsc')) : `${t('sort.tipSet')} ${label}`)}">
       ${esc(label)} <span class="arrow">${arrow}</span></a>`;
   };
 
   return `<nav class="sortbar" aria-label="Ordenar resultados">
-    <span class="lbl">Ordenar por</span>
+    <span class="lbl">${esc(t('sort.by'))}</span>
     <span class="opts">${opts.map(([k, l]) => link(k, l)).join('')}</span>
-    <span class="hint">Eventos sem score calculado (N/A) aparecem no fim.</span>
+    <span class="hint">${esc(t('sort.naHint'))}</span>
   </nav>`;
 }
 
@@ -292,60 +353,63 @@ export function eventCard(e: any): string {
   </div></a>`;
 }
 
-function section(title: string, events: any[], emptyMsg = 'NO VERIFIED DATA AVAILABLE', cls = 'g3'): string {
+function section(title: string, events: any[], t: Translator, emptyMsg?: string, cls = 'g3'): string {
   return `<h2 class="sec">${esc(title)}</h2>` + (events.length
     ? `<div class="grid ${cls}">${events.map(eventCard).join('')}</div>`
-    : `<div class="empty"><strong>${esc(emptyMsg)}</strong>Nenhum evento publicado nesta secção neste momento. Nada é gerado para preencher o espaço.</div>`);
+    : `<div class="empty"><strong>${esc(emptyMsg ?? t('empty.noData'))}</strong>${esc(t('empty.noDataSection'))}</div>`);
 }
 
 // ---------------------------------------------------------------- HOME
-export function renderHome(d: any): string {
+export function renderHome(d: any, prefs: Prefs = DEFAULT_PREFS): string {
+  const t = translator(prefs.lang);
   const s = d.status;
   const online = s.sources.filter((x: any) => x.status === 'online').length;
   const pulse = `<div class="panel" style="margin-top:18px">
-    <h3 style="margin:0 0 4px">Global Situation</h3>
-    <p class="small dim" style="margin:0 0 12px">Contadores directos da base de dados. Não é um índice científico.</p>
+    <h3 style="margin:0 0 4px">${esc(t('home.situation'))}</h3>
+    <p class="small dim" style="margin:0 0 12px">${esc(t('home.situationSub'))}</p>
     <div class="chips">
-      <span class="pill">Eventos publicados <b>${s.counts.published}</b></span>
-      <span class="pill">Artigos ingeridos <b>${s.counts.articles}</b></span>
-      <span class="pill">Fontes online <b class="${online === s.sources.length ? 'ok' : 'warnc'}">${online}/${s.sources.length}</b></span>
-      <span class="pill">Conflitos abertos <b class="${s.counts.conflicts ? 'badc' : ''}">${s.counts.conflicts}</b></span>
-      <span class="pill">Em revisão humana <b>${s.counts.review_open}</b></span>
-      <span class="pill">Registos de auditoria <b>${s.counts.audit_entries}</b></span>
+      <span class="pill">${esc(t('count.published'))} <b>${s.counts.published}</b></span>
+      <span class="pill">${esc(t('count.articles'))} <b>${s.counts.articles}</b></span>
+      <span class="pill">${esc(t('count.sourcesOnline'))} <b class="${online === s.sources.length ? 'ok' : 'warnc'}">${online}/${s.sources.length}</b></span>
+      <span class="pill">${esc(t('count.conflicts'))} <b class="${s.counts.conflicts ? 'badc' : ''}">${s.counts.conflicts}</b></span>
+      <span class="pill">${esc(t('count.review'))} <b>${s.counts.review_open}</b></span>
+      <span class="pill">${esc(t('count.audit'))} <b>${s.counts.audit_entries}</b></span>
     </div></div>`;
 
-  return layout({ title: 'Home', current: '/' }, `
-  <h1>O que está a acontecer</h1>
-  <p class="small dim">Eventos construídos a partir de artigos de fontes reais, agrupados, verificados e pontuados. Cada número desta página tem origem rastreável.</p>
-  ${sortBar({ path: '/events', order: 'recent' })}
+  return layout({ title: t('home.title'), current: '/', ...prefs }, `
+  <h1>${esc(t('home.title'))}</h1>
+  <p class="small dim">${esc(t('home.sub'))}</p>
+  ${sortBar({ path: '/events', order: 'recent', lang: prefs.lang })}
   ${pulse}
-  ${section('Breaking — últimas 12h', d.breaking)}
-  ${section('Top Stories', d.top)}
-  ${section('Trending Now', d.trending, 'SEM ACTIVIDADE REAL REGISTADA')}
-  ${section('Eventos Naturais', d.natural, 'NO VERIFIED DATA AVAILABLE', 'g4')}
-  ${section('Guerra e Conflito', d.conflict, 'NO VERIFIED DATA AVAILABLE', 'g4')}
-  ${section('Economia', d.economy, 'NO VERIFIED DATA AVAILABLE', 'g4')}
-  ${section('Tecnologia', d.tech, 'NO VERIFIED DATA AVAILABLE', 'g4')}
+  ${section(t('home.breaking'), d.breaking, t)}
+  ${section(t('home.top'), d.top, t)}
+  ${section(t('home.trending'), d.trending, t, t('empty.noActivity'))}
+  ${section(t('home.natural'), d.natural, t, undefined, 'g4')}
+  ${section(t('home.conflict'), d.conflict, t, undefined, 'g4')}
+  ${section(t('home.economy'), d.economy, t, undefined, 'g4')}
+  ${section(t('home.tech'), d.tech, t, undefined, 'g4')}
   `);
 }
 
 // ---------------------------------------------------------------- LIST
 export function renderList(o: {
   title: string; events: any[]; note?: string; grouped?: boolean;
-  sort?: { path: string; order?: string; dir?: string; query?: Record<string, string> };
+  sort?: { path: string; order?: string; dir?: string; query?: Record<string, string>; lang?: Lang };
   current?: string;
+  prefs?: Prefs;
 }): string {
   const body = o.events.length
     ? `<div class="grid g3">${o.events.map(eventCard).join('')}</div>`
-    : `<div class="empty"><strong>NO VERIFIED DATA AVAILABLE</strong>${esc(o.note ?? 'Não existem eventos publicados que correspondam a este filtro.')}</div>`;
-  return layout({ title: o.title, current: o.current }, `<h1>${esc(o.title)}</h1>
+    : `<div class="empty"><strong>${esc(translator((o.prefs ?? DEFAULT_PREFS).lang)('empty.noData'))}</strong>${esc(o.note ?? translator((o.prefs ?? DEFAULT_PREFS).lang)('empty.noFilter'))}</div>`;
+  return layout({ title: o.title, current: o.current, ...(o.prefs ?? DEFAULT_PREFS) }, `<h1>${esc(o.title)}</h1>
     ${o.note && o.events.length ? `<p class="small dim">${esc(o.note)}</p>` : ''}
     ${o.sort ? sortBar(o.sort) : ''}
     <div style="margin-top:16px">${body}</div>`);
 }
 
 // ---------------------------------------------------------------- EVENT
-export function renderEvent(d: any, viewer?: { csrf: string; following: boolean; bookmarked: boolean }): string {
+export function renderEvent(d: any, viewer?: { csrf: string; following: boolean; bookmarked: boolean }, prefs: Prefs = DEFAULT_PREFS): string {
+  const t = translator(prefs.lang);
   const e = d.event;
   const score = (k: string) => d.scores.find((s: any) => s.kind === k);
   const val = (k: string) => { const s = score(k); return s ? s.value : null; };
@@ -432,7 +496,7 @@ export function renderEvent(d: any, viewer?: { csrf: string; following: boolean;
     isBasedOn: d.articles.map((a: any) => a.url),
   };
 
-  return layout({ title: e.title, description: `${e.category_label} · ${e.place ?? ''} · ${d.articles.length} fontes ligadas.`, jsonLd }, `
+  return layout({ title: e.title, description: `${e.category_label} · ${e.place ?? ''} · ${d.articles.length} sources.`, jsonLd, ...prefs }, `
   <div class="evhead" style="margin-top:22px">
     <div class="chips">
       <span class="chip cat">${esc(e.category_label)}</span>
@@ -574,7 +638,7 @@ export function renderEvent(d: any, viewer?: { csrf: string; following: boolean;
 }
 
 // ---------------------------------------------------------------- MAP
-export function renderMap(points: any[]): string {
+export function renderMap(points: any[], prefs: Prefs = DEFAULT_PREFS): string {
   const proj = (lat: number, lon: number) => [(lon + 180) * (1000 / 360), (90 - lat) * (500 / 180)];
   const dots = points.map((p) => {
     const [x, y] = proj(Number(p.lat), Number(p.lon));
@@ -584,7 +648,7 @@ export function renderMap(points: any[]): string {
   }).join('');
   const grid = Array.from({ length: 11 }, (_, i) => `<line x1="0" y1="${i * 50}" x2="1000" y2="${i * 50}" stroke="#141a24"/>`).join('')
     + Array.from({ length: 19 }, (_, i) => `<line x1="${i * 55.5}" y1="0" x2="${i * 55.5}" y2="500" stroke="#141a24"/>`).join('');
-  return layout({ title: 'Mapa', current: '/map' }, `<h1>Mapa de eventos</h1>
+  return layout({ title: 'Mapa', current: '/map', ...prefs }, `<h1>Mapa de eventos</h1>
     <p class="small dim">Projecção equirectangular simples. Pontos sólidos = coordenadas reportadas pela fonte. Pontos esbatidos e maiores = <span class="mono">APPROXIMATE LOCATION</span> (centróide de gazetteer). Só são mostrados eventos publicados com coordenadas.</p>
     ${points.length ? `<svg class="map" viewBox="0 0 1000 500" role="img" aria-label="Mapa mundial de eventos publicados">
       <rect width="1000" height="500" fill="#080b10"/>${grid}
@@ -595,8 +659,8 @@ export function renderMap(points: any[]): string {
 }
 
 // ---------------------------------------------------------------- STATUS
-export function renderStatus(s: any): string {
-  return layout({ title: 'Estado do sistema', current: '/status' }, `<h1>Estado do sistema</h1>
+export function renderStatus(s: any, prefs: Prefs = DEFAULT_PREFS): string {
+  return layout({ title: 'Estado do sistema', current: '/status', ...prefs }, `<h1>Estado do sistema</h1>
   <p class="small dim">Estado real, sem mascarar falhas. Se uma fonte estiver offline é isso que aparece — não é substituída por dados inventados.</p>
   <div class="panel" style="margin-top:16px"><h3>Contadores</h3><div class="chips">
     ${Object.entries(s.counts).map(([k, v]) => `<span class="pill">${esc(k)} <b>${esc(v)}</b></span>`).join('')}
@@ -616,8 +680,8 @@ export function renderStatus(s: any): string {
 }
 
 // ---------------------------------------------------------------- ABOUT
-export function renderAbout(): string {
-  return layout({ title: 'Metodologia', current: '/about' }, `<h1>Metodologia</h1>
+export function renderAbout(prefs: Prefs = DEFAULT_PREFS): string {
+  return layout({ title: 'Metodologia', current: '/about', ...prefs }, `<h1>Metodologia</h1>
   <div class="panel" style="margin-top:16px">
     <h3>O que esta plataforma faz</h3>
     <p class="small">Recolhe artigos de feeds públicos de fontes reais, normaliza-os, agrupa-os em <strong>eventos</strong> com identificador permanente, cruza as fontes, deteca contradições, calcula scores explicáveis e regista tudo num registo de auditoria imutável.</p>
@@ -652,7 +716,7 @@ const SUPPORT_CSS = `
 .copy{background:var(--bg2);border:1px solid var(--line2);color:var(--muted);border-radius:8px;
   padding:0 13px;font-size:12px;font-family:var(--mono);cursor:pointer;white-space:nowrap}
 .copy:hover{border-color:var(--acc);color:var(--acc)}
-.paylink{display:inline-block;background:var(--acc);color:#07090d;border-radius:8px;padding:10px 16px;
+.paylink{display:inline-block;background:var(--acc);color:var(--on-acc);border-radius:8px;padding:10px 16px;
   font-weight:700;font-size:14px;text-align:center}
 .paylink:hover{opacity:.9}
 .verified{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--acc);
@@ -663,7 +727,7 @@ export function renderSupport(cfg: {
   configured: boolean;
   methods: Array<{ id: string; label: string; value: string; href?: string; note: string; qrSvg: string; problem?: string }>;
   problems: string[];
-}): string {
+}, prefs: Prefs = DEFAULT_PREFS): string {
   const cards = cfg.methods.map((m) => `
     <div class="card2">
       <h3>${m.id === 'revolut' ? '💳' : 'Ξ'} ${esc(m.label)}
@@ -689,6 +753,7 @@ export function renderSupport(cfg: {
     title: 'Apoiar',
     current: '/support',
     extraCss: SUPPORT_CSS,
+    ...prefs,
     description: 'Apoie o Global News Intelligence. Os donativos não influenciam ranking, relevância, confiança nem decisões editoriais.',
   }, `<h1>☕ Pay for a coffee</h1>
   <p class="small dim" style="max-width:62ch">Esta plataforma não tem publicidade, não vende dados e não aceita conteúdo patrocinado. Se lhe for útil, pode contribuir para os custos de infraestrutura.</p>

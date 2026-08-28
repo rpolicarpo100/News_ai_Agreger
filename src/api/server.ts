@@ -18,6 +18,7 @@ import { secureHeaders, rateLimit, requireAdmin, clientIp } from './security.js'
 import { allFlags, setFlag, FLAGS, getFlag } from '../core/flags.js';
 import { audit, securityEvent } from '../core/audit.js';
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
+import { normaliseLang, normaliseTheme, langFromHeader, translator, CATEGORY_LABELS, type Lang, type Theme } from '../web/i18n.js';
 import { renderHome, renderEvent, renderList, renderMap, renderAbout, renderSupport, renderStatus } from '../web/render.js';
 import { renderLogin, renderControlCenter, renderAdminSources, renderReviewQueue, renderAdminEvents, renderAudit, renderSecurity } from '../web/admin.js';
 import { requireSession, requireCsrf, issueSession, clearSession, csrfToken, verifyAdminToken, sessionValid } from './session.js';
@@ -108,18 +109,66 @@ async function publishedEvents(opts: {
      ORDER BY ${order} LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`, params);
 }
 
-function decorate(rows: any[]) {
+function decorate(rows: any[], lang: Lang = 'pt') {
   return rows.map((e) => {
     const f = freshness(e.category, e.last_activity_at);
     return {
       ...e,
-      category_label: CATEGORY_LABELS_PT[e.category] ?? e.category,
+      category_label: catLabel(e.category, lang),
       freshness: f.state,
       age_hours: Number(f.ageHours.toFixed(2)),
       updated_label: relativePt(e.last_activity_at),
       url: `/event/${e.id}/${e.slug}`,
     };
   });
+}
+
+// ---------------------------------------------------------------- preferências (§61)
+// Idioma e tema vêm, por ordem: parâmetro ?lang= / ?theme=, cookie, cabeçalho
+// Accept-Language do browser, e por fim o padrão. O parâmetro grava o cookie,
+// para que a escolha persista sem precisar de conta.
+const PREF_MAX_AGE = 365 * 24 * 3600;
+
+function prefCookie(name: string, value: string): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  // SameSite=Lax e sem HttpOnly: não é um segredo, é uma preferência de
+  // apresentação, e nada de sensível depende dela.
+  return `${name}=${value}; Path=/; Max-Age=${PREF_MAX_AGE}; SameSite=Lax${secure}`;
+}
+
+app.use((req, res, next) => {
+  const cookies = parseCookies(req);
+  let lang: Lang;
+  let theme: Theme;
+
+  if (req.query.lang !== undefined) {
+    lang = normaliseLang(req.query.lang);
+    res.append('Set-Cookie', prefCookie('gni_lang', lang));
+  } else if (cookies.gni_lang) {
+    lang = normaliseLang(cookies.gni_lang);
+  } else {
+    lang = langFromHeader(req.headers['accept-language'] as string | undefined);
+  }
+
+  if (req.query.theme !== undefined) {
+    theme = normaliseTheme(req.query.theme);
+    res.append('Set-Cookie', prefCookie('gni_theme', theme));
+  } else {
+    theme = normaliseTheme(cookies.gni_theme);
+  }
+
+  (req as any).prefs = { lang, theme, path: req.originalUrl.split('#')[0] };
+  next();
+});
+
+/** Preferências do pedido, para passar aos renderizadores. */
+function prefsOf(req: Request) {
+  return (req as any).prefs ?? { lang: 'pt' as Lang, theme: 'dark' as Theme, path: '/' };
+}
+
+/** Rótulo de categoria no idioma do pedido. */
+function catLabel(key: string, lang: Lang): string {
+  return CATEGORY_LABELS[lang]?.[key] ?? CATEGORY_LABELS_PT[key] ?? key;
 }
 
 // ---------------------------------------------------------------- JSON API
@@ -361,7 +410,7 @@ export async function systemStatus() {
 }
 
 // ---------------------------------------------------------------- HTML routes
-app.get('/', async (_req, res) => {
+app.get('/', async (req, res) => {
   const [breaking, trending, top, natural, conflict, economy, tech] = await Promise.all([
     publishedEvents({ order: 'recent', limit: 6, sinceHours: 12 }),
     publishedEvents({ order: 'trending', limit: 6 }),
@@ -372,11 +421,14 @@ app.get('/', async (_req, res) => {
     publishedEvents({ category: 'technology', limit: 4 }),
   ]);
   const status = await systemStatus();
+  const pf = prefsOf(req);
+  const L = pf.lang;
   res.type('html').send(renderHome({
-    breaking: decorate(breaking), trending: decorate(trending), top: decorate(top),
-    natural: decorate(natural), conflict: decorate(conflict), economy: decorate(economy), tech: decorate(tech),
+    breaking: decorate(breaking, L), trending: decorate(trending, L), top: decorate(top, L),
+    natural: decorate(natural, L), conflict: decorate(conflict, L),
+    economy: decorate(economy, L), tech: decorate(tech, L),
     status,
-  }));
+  }, pf));
 });
 
 // Express 5 removed the `:slug?` optional-parameter syntax; register both forms.
@@ -396,7 +448,7 @@ app.get(['/event/:id', '/event/:id/:slug'], async (req, res) => {
     ]);
     viewer = { csrf: sess.csrf, following: f.length > 0, bookmarked: b.length > 0 };
   }
-  res.type('html').send(renderEvent(data, viewer));
+  res.type('html').send(renderEvent(data, viewer, prefsOf(req)));
 });
 
 /** Lista global com ordenação (§52). Destino dos controlos "Ordenar por". */
@@ -411,12 +463,13 @@ app.get('/events', async (req, res) => {
   };
   const sentido = dir === 'asc' ? 'do menor para o maior' : 'do maior para o menor';
   res.type('html').send(renderList({
-    title: 'Todos os eventos',
+    title: translator(prefsOf(req).lang)('list.allEvents'),
     events: decorate(rows),
     note: order === 'recent'
       ? 'Ordenado por actividade mais recente.'
       : `Ordenado por ${labels[order] ?? order}, ${sentido}. Eventos cujo score é N/A aparecem no fim: um valor desconhecido não é tratado como zero.`,
-    sort: { path: '/events', order, dir },
+    sort: { path: '/events', order, dir, lang: prefsOf(req).lang },
+    prefs: prefsOf(req),
   }));
 });
 
@@ -429,10 +482,11 @@ app.get('/category/:cat', async (req, res) => {
     order: (order === 'life_impact' ? 'impact' : order) as any, dir,
   });
   res.type('html').send(renderList({
-    title: CATEGORY_LABELS_PT[cat] ?? cat,
-    events: decorate(rows),
-    sort: { path: `/category/${cat}`, order, dir },
+    title: catLabel(cat, prefsOf(req).lang),
+    events: decorate(rows, prefsOf(req).lang),
+    sort: { path: `/category/${cat}`, order, dir, lang: prefsOf(req).lang },
     current: `/category/${cat}`,
+    prefs: prefsOf(req),
   }));
 });
 app.get('/country/:cc', async (req, res) => {
@@ -444,18 +498,19 @@ app.get('/country/:cc', async (req, res) => {
     order: (order === 'life_impact' ? 'impact' : order) as any, dir,
   });
   res.type('html').send(renderList({
-    title: `País: ${cc.toUpperCase()}`,
-    events: decorate(rows),
-    sort: { path: `/country/${cc}`, order, dir },
+    title: `${translator(prefsOf(req).lang)('list.country')}: ${cc.toUpperCase()}`,
+    events: decorate(rows, prefsOf(req).lang),
+    sort: { path: `/country/${cc}`, order, dir, lang: prefsOf(req).lang },
+    prefs: prefsOf(req),
   }));
 });
-app.get('/trending', async (_req, res) => {
+app.get('/trending', async (req, res) => {
   const rows = await publishedEvents({ order: 'trending', limit: 50 });
-  res.type('html').send(renderList({ title: 'Trending Now', events: decorate(rows), note: 'Trending é calculado exclusivamente a partir de visualizações contadas. Eventos sem actividade real aparecem com N/A.' }));
+  res.type('html').send(renderList({ title: translator(prefsOf(req).lang)('list.trending'), events: decorate(rows, prefsOf(req).lang), note: 'Trending é calculado exclusivamente a partir de visualizações contadas. Eventos sem actividade real aparecem com N/A.', prefs: prefsOf(req), current: '/trending' }));
 });
 app.get('/most-viewed', async (req, res) => {
   const rows = await publishedEvents({ order: 'views', limit: 50, sinceHours: Number(req.query.h ?? 24) });
-  res.type('html').send(renderList({ title: `Mais Vistos — últimas ${Number(req.query.h ?? 24)}h`, events: decorate(rows) }));
+  res.type('html').send(renderList({ title: `${translator(prefsOf(req).lang)('nav.mostViewed')} — ${Number(req.query.h ?? 24)}h`, events: decorate(rows, prefsOf(req).lang), prefs: prefsOf(req) }));
 });
 app.get('/today', async (req, res) => {
   const order = String(req.query.order ?? 'relevance');
@@ -465,20 +520,21 @@ app.get('/today', async (req, res) => {
     order: (order === 'life_impact' ? 'impact' : order) as any, dir,
   });
   res.type('html').send(renderList({
-    title: 'Hoje no Mundo', events: decorate(rows), grouped: true,
-    sort: { path: '/today', order, dir }, current: '/today',
+    title: translator(prefsOf(req).lang)('list.today'), events: decorate(rows, prefsOf(req).lang), grouped: true,
+    sort: { path: '/today', order, dir, lang: prefsOf(req).lang }, current: '/today',
+    prefs: prefsOf(req),
   }));
 });
-app.get('/breaking', async (_req, res) => {
+app.get('/breaking', async (req, res) => {
   const rows = await publishedEvents({ sinceHours: 6, limit: 40, order: 'recent' });
-  res.type('html').send(renderList({ title: 'Breaking', events: decorate(rows) }));
+  res.type('html').send(renderList({ title: translator(prefsOf(req).lang)('list.breaking'), events: decorate(rows, prefsOf(req).lang), prefs: prefsOf(req), current: '/breaking' }));
 });
-app.get('/map', async (_req, res) => {
+app.get('/map', async (req, res) => {
   const db = await getDb();
   const points = await db.query<any>(
     `SELECT id, slug, title, category, lat, lon, geo_precision, place, country FROM event
      WHERE status='PUBLISHED' AND lat IS NOT NULL AND lon IS NOT NULL ORDER BY last_activity_at DESC LIMIT 300`);
-  res.type('html').send(renderMap(points));
+  res.type('html').send(renderMap(points, prefsOf(req)));
 });
 app.get('/search', async (req, res) => {
   const q = String(req.query.q ?? '');
@@ -487,11 +543,11 @@ app.get('/search', async (req, res) => {
   const rows = await db.query<any>(
     `SELECT e.* FROM event e WHERE e.status='PUBLISHED' AND (LOWER(e.title) LIKE $1 OR LOWER(COALESCE(e.place,'')) LIKE $1)
      ORDER BY e.last_activity_at DESC LIMIT 50`, [`%${q.toLowerCase()}%`]);
-  res.type('html').send(renderList({ title: `Pesquisa: ${q}`, events: decorate(rows) }));
+  res.type('html').send(renderList({ title: `${translator(prefsOf(req).lang)('list.search')}: ${q}`, events: decorate(rows, prefsOf(req).lang), prefs: prefsOf(req) }));
 });
-app.get('/status', async (_req, res) => res.type('html').send(renderStatus(await systemStatus())));
-app.get('/about', async (_req, res) => res.type('html').send(renderAbout()));
-app.get('/support', async (_req, res) => {
+app.get('/status', async (req, res) => res.type('html').send(renderStatus(await systemStatus(), prefsOf(req))));
+app.get('/about', async (req, res) => res.type('html').send(renderAbout(prefsOf(req))));
+app.get('/support', async (req, res) => {
   const cfg = loadSupportConfig();
   res.type('html').send(renderSupport({
     configured: cfg.configured,
@@ -500,7 +556,7 @@ app.get('/support', async (_req, res) => {
       id: m.id, label: m.label, value: m.value, href: m.href, note: m.note, problem: m.problem,
       qrSvg: qrSvg(m.qrPayload, { size: 190, label: `Código QR para ${m.label}` }),
     })),
-  }));
+  }, prefsOf(req)));
 });
 
 // ---------------------------------------------------------------- SEO
@@ -751,6 +807,7 @@ account.get('/login', async (req, res) => {
     next: String(req.query.next ?? '/my'),
     error: req.query.err ? String(req.query.err).slice(0, 200) : undefined,
     ok: req.query.ok ? String(req.query.ok).slice(0, 200) : undefined,
+    prefs: prefsOf(req),
   }));
 });
 
@@ -759,6 +816,7 @@ account.get('/register', async (req, res) => {
   res.type('html').send(renderAuth('register', {
     next: String(req.query.next ?? '/my'),
     error: req.query.err ? String(req.query.err).slice(0, 200) : undefined,
+    prefs: prefsOf(req),
   }));
 });
 
@@ -766,7 +824,7 @@ account.post('/register', rateLimit(10, 60_000), async (req, res) => {
   const { email, password } = req.body ?? {};
   const out = await createUser(String(email ?? ''), String(password ?? ''));
   if (out.error || !out.user) {
-    res.status(400).type('html').send(renderAuth('register', { error: out.error }));
+    res.status(400).type('html').send(renderAuth('register', { error: out.error , prefs: prefsOf(req) }));
     return;
   }
   const sess = await createSession(out.user.id);
@@ -780,7 +838,7 @@ account.post('/login', rateLimit(20, 60_000), async (req, res) => {
   if (!user) {
     // Same message for unknown email and wrong password: no account enumeration.
     await securityEvent('user_login_failed', 'low', { ip: clientIp(req) });
-    res.status(401).type('html').send(renderAuth('login', { error: 'Email ou palavra-passe incorrectos.' }));
+    res.status(401).type('html').send(renderAuth('login', { error: 'Email ou palavra-passe incorrectos.' , prefs: prefsOf(req) }));
     return;
   }
   const sess = await createSession(user.id);
@@ -884,8 +942,8 @@ my.get('/', async (req, res) => {
   ]);
   res.type('html').send(renderMyIntelligence({
     user, csrf, follows, unread, alertCount,
-    events: decorate(events), bookmarks: decorate(bookmarks),
-    countries: countryOpts, flash,
+    events: decorate(events, prefsOf(req).lang), bookmarks: decorate(bookmarks, prefsOf(req).lang),
+    countries: countryOpts, flash, prefs: prefsOf(req),
   }));
 });
 
@@ -924,7 +982,7 @@ my.get('/alerts', async (req, res) => {
      GROUP BY country ORDER BY n DESC LIMIT 40`);
   const flash = req.query.ok ? { kind: 'ok', msg: String(req.query.ok).slice(0, 200) }
     : req.query.err ? { kind: 'err', msg: String(req.query.err).slice(0, 200) } : undefined;
-  res.type('html').send(renderAlerts({ rules, countries, csrf, flash }));
+  res.type('html').send(renderAlerts({ rules, countries, csrf, flash, prefs: prefsOf(req) }));
 });
 
 my.post('/alerts', myCsrf, async (req, res) => {
@@ -967,7 +1025,7 @@ my.post('/alerts/:id/delete', myCsrf, async (req, res) => {
 my.get('/inbox', async (req, res) => {
   const { user, csrf } = (req as any).session;
   const [items, unread] = await Promise.all([listNotifications(user.id), unreadCount(user.id)]);
-  res.type('html').send(renderInbox({ items, unread, csrf }));
+  res.type('html').send(renderInbox({ items, unread, csrf, prefs: prefsOf(req) }));
 });
 
 my.post('/inbox/read', myCsrf, async (req, res) => {
@@ -997,7 +1055,7 @@ app.get('/brief', async (req, res) => {
   res.type('html').send(renderBrief({
     ...brief,
     sections: brief.sections.map((s) => ({ heading: s.heading, events: decorate(s.events) })),
-  }, !!sess));
+  }, !!sess, prefsOf(req)));
 });
 
 app.get('/api/brief', rateLimit(60, 60_000), async (req, res) => {

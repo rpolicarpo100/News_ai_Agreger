@@ -5,7 +5,7 @@
  * events. When a user follows nothing, the page says so and offers choices —
  * it does not invent a feed to look populated.
  */
-import { esc, eventCard, pageShell } from './render.js';
+import { esc, eventCard, pageShell, DEFAULT_PREFS, type Prefs } from './render.js';
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
 
 function csrfField(token: string): string {
@@ -38,11 +38,12 @@ form.ib{display:inline;margin:0}
 `;
 
 // ---------------------------------------------------------------- login / register
-export function renderAuth(mode: 'login' | 'register', opts: { error?: string; ok?: string; next?: string } = {}): string {
+export function renderAuth(mode: 'login' | 'register', opts: { error?: string; ok?: string; next?: string; prefs?: Prefs } = {}): string {
   const isLogin = mode === 'login';
   return pageShell({
     title: isLogin ? 'Entrar' : 'Criar conta',
     extraCss: AUTH_CSS,
+    ...(opts.prefs ?? DEFAULT_PREFS),
     body: `<div class="auth">
       <h1 style="text-align:center">${isLogin ? 'Entrar' : 'Criar conta'}</h1>
       <p class="small dim" style="text-align:center">Uma conta serve apenas para seguir países, categorias e eventos. Guardamos o email e nada mais — sem nome, sem perfil, sem rastreio.</p>
@@ -73,6 +74,7 @@ interface MyData {
   bookmarks: any[];
   countries: Array<{ country: string; n: number }>;
   csrf: string;
+  prefs?: Prefs;
   unread?: number;
   alertCount?: number;
   flash?: { kind: string; msg: string };
@@ -119,6 +121,7 @@ export function renderMyIntelligence(d: MyData): string {
     title: 'My Intelligence',
     current: '/my',
     extraCss: AUTH_CSS,
+    ...(d.prefs ?? DEFAULT_PREFS),
     body: `
     <h1>My Intelligence</h1>
     <p class="small dim">Feed construído exclusivamente a partir do que segue. Sessão iniciada como <span class="mono">${esc(d.user.email)}</span>.</p>

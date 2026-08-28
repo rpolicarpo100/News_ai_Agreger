@@ -1,7 +1,7 @@
 /**
  * Alerts, inbox and Daily Brief UI — §57, §58.
  */
-import { esc, eventCard, pageShell } from './render.js';
+import { esc, eventCard, pageShell, DEFAULT_PREFS, type Prefs } from './render.js';
 import { CATEGORY_LABELS_PT } from '../pipeline/classify.js';
 import { describeRule } from '../pipeline/alerts.js';
 
@@ -47,7 +47,7 @@ const csrfField = (t: string) => `<input type="hidden" name="_csrf" value="${esc
 // ---------------------------------------------------------------- alerts
 export function renderAlerts(d: {
   rules: any[]; countries: Array<{ country: string; n: number }>;
-  csrf: string; flash?: { kind: string; msg: string };
+  csrf: string; flash?: { kind: string; msg: string }; prefs?: Prefs;
 }): string {
   const rules = d.rules.length ? d.rules.map((r) => `
     <div class="rule ${r.enabled ? '' : 'off'}">
@@ -79,7 +79,7 @@ export function renderAlerts(d: {
     .map((c) => `<option value="${esc(c.country)}">${esc(c.country)} (${c.n})</option>`).join('');
 
   return pageShell({
-    title: 'Alertas', current: '/my/alerts', extraCss: CSS,
+    title: 'Alertas', current: '/my/alerts', extraCss: CSS, ...(d.prefs ?? DEFAULT_PREFS),
     body: `<h1>Alertas</h1>
     <p class="small dim">Um alerta é uma regra sobre eventos reais. Quando um evento publicado corresponde, recebe uma notificação na <a href="/my/inbox">caixa de entrada</a>. A entrega é dentro da aplicação — não é necessário configurar email.</p>
     ${d.flash ? `<div class="notice ${esc(d.flash.kind)}">${esc(d.flash.msg)}</div>` : ''}
@@ -108,7 +108,7 @@ export function renderAlerts(d: {
 }
 
 // ---------------------------------------------------------------- inbox
-export function renderInbox(d: { items: any[]; unread: number; csrf: string }): string {
+export function renderInbox(d: { items: any[]; unread: number; csrf: string; prefs?: Prefs }): string {
   const list = d.items.length ? d.items.map((n) => `
     <div class="notif ${n.read_at ? '' : 'unread'}">
       <span class="dot2 ${n.read_at ? 'read' : ''}" aria-hidden="true"></span>
@@ -126,7 +126,7 @@ export function renderInbox(d: { items: any[]; unread: number; csrf: string }): 
     : `<div class="empty"><strong>CAIXA DE ENTRADA VAZIA</strong>Nenhum evento real correspondeu aos seus alertas. Nada é gerado para preencher esta página.</div>`;
 
   return pageShell({
-    title: 'Caixa de entrada', current: '/my/inbox', extraCss: CSS,
+    title: 'Caixa de entrada', current: '/my/inbox', extraCss: CSS, ...(d.prefs ?? DEFAULT_PREFS),
     body: `<h1>Caixa de entrada${d.unread ? `<span class="badge">${d.unread}</span>` : ''}</h1>
     <p class="small dim">Notificações geradas pelos seus <a href="/my/alerts">alertas</a>. Cada uma aponta para um evento publicado e indica que critério a despoletou.</p>
     ${d.unread ? `<form method="post" action="/my/inbox/read" style="margin:14px 0">
@@ -139,7 +139,7 @@ export function renderInbox(d: { items: any[]; unread: number; csrf: string }): 
 }
 
 // ---------------------------------------------------------------- daily brief
-export function renderBrief(b: any, signedIn: boolean): string {
+export function renderBrief(b: any, signedIn: boolean, prefs: Prefs = DEFAULT_PREFS): string {
   const sections = b.sections.map((s: any) => `
     <div class="brief-sec">
       <h2 class="sec">${esc(s.heading)}</h2>
@@ -147,7 +147,7 @@ export function renderBrief(b: any, signedIn: boolean): string {
     </div>`).join('');
 
   return pageShell({
-    title: 'Daily Intelligence Brief', current: '/brief', extraCss: CSS,
+    title: 'Daily Intelligence Brief', current: '/brief', extraCss: CSS, ...prefs,
     description: 'Resumo diário construído a partir de acontecimentos reais publicados nas últimas 24 horas.',
     body: `<h1>Daily Intelligence Brief</h1>
     <p class="small dim">Janela de ${esc(b.windowHours)} horas · gerado ${esc(new Date(b.generatedAt).toISOString().slice(0, 16).replace('T', ' '))} UTC
