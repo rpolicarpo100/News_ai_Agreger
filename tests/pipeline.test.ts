@@ -1661,3 +1661,34 @@ test('todas as páginas HTML herdam idioma e tema (regressão)', async () => {
   const comUnderscore = [...src.matchAll(/app\.get\('(\/[a-z-]*)'[^)]*\(_req/g)].map((m) => m[1]);
   assert.deepEqual(comUnderscore, [], `rotas que ignoram o pedido: ${comUnderscore.join(', ')}`);
 });
+
+test('a documentação de APIs cobre todas as fontes realmente registadas', async () => {
+  // Uma lista escrita à mão desactualiza-se em silêncio. Este teste falha se
+  // uma fonte for adicionada ao código sem regenerar a documentação.
+  const { SOURCES } = await import('../src/ingestion/sources.js');
+  const doc = readFileSync('docs/APIS-E-FERRAMENTAS.md', 'utf8');
+  for (const s of SOURCES) {
+    assert.ok(doc.includes(`\`${s.id}\``), `fonte "${s.id}" em falta na documentação — correr: npm run docs:apis`);
+  }
+  assert.ok(doc.includes(`## 1. Fontes de dados (${SOURCES.length})`),
+    'a contagem de fontes na documentação está desactualizada');
+});
+
+test('a documentação lista todas as dependências de produção', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const doc = readFileSync('docs/APIS-E-FERRAMENTAS.md', 'utf8');
+  for (const dep of Object.keys(pkg.dependencies)) {
+    assert.ok(doc.includes(`\`${dep}\``), `dependência "${dep}" não documentada`);
+  }
+});
+
+test('nenhuma fonte registada exige chave de API', async () => {
+  // A promessa "funciona sem chaves" tem de ser verdadeira no código, não só
+  // na documentação: nenhum feed_url pode transportar um token.
+  const { SOURCES } = await import('../src/ingestion/sources.js');
+  for (const s of SOURCES) {
+    assert.ok(/^https?:\/\//.test(s.feed_url), `${s.id} tem um feed_url inválido`);
+    assert.ok(!/[?&](api_?key|apikey|token|access_token|key)=/i.test(s.feed_url),
+      `${s.id} transporta uma credencial no URL: as fontes têm de ser públicas`);
+  }
+});
