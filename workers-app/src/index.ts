@@ -10,6 +10,7 @@
 import { Hono } from 'hono';
 import pg from 'pg';
 import { publishedEvents, eventDetail, systemStatus, searchEvents, mapEvents } from './data';
+import { registerHtmlRoutes } from './html';
 
 type Bindings = { DATABASE_URL?: string; HYPERDRIVE?: Hyperdrive };
 type Variables = { pool: pg.Pool };
@@ -124,13 +125,6 @@ app.get('/api/sources', async (c) => {
   }
 });
 
-/* ---------------------------------------------------------------- GET / (placeholder) */
-
-app.get('/', (c) => c.json({
-  name: 'Global News Intelligence',
-  version: 'fase-1-workers',
-  endpoints: ['/api/health', '/api/status', '/api/events', '/api/events/:id', '/api/search', '/api/map', '/api/sources'],
-  note: 'Fase 1: API JSON completa. Rotas HTML (server-rendering) na Fase 2.',
-}));
+registerHtmlRoutes(app);
 
 export default app;
