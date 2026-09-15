@@ -2,8 +2,11 @@
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, extname, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// fileURLToPath (e não .pathname): corre no Windows também — .pathname devolve
+// "/D:/..." e mantém %20 por decodificar, partindo o scanner fora do Linux.
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bsk-[A-Za-z0-9]{24,}\b/, label: 'OpenAI-style API key' },
   { re: /\bsk-ant-[A-Za-z0-9-]{20,}\b/, label: 'Anthropic API key' },

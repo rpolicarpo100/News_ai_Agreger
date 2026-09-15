@@ -4,8 +4,11 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// fileURLToPath (e não .pathname): corre no Windows também — .pathname devolve
+// "/D:/..." e mantém %20 por decodificar, partindo o scan fora do Linux.
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCAN_DIRS = ['src'];
 const BAD_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\bMath\.random\s*\(/g, why: 'randomness must never feed data, scores or metrics' },

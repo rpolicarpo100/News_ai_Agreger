@@ -1,106 +1,36 @@
-name: Ingestão agendada
+name: Scheduled Ingestion
 
-# Porque existe este workflow
-# ---------------------------
-# O plano gratuito do Render adormece o serviço após 15 minutos de
-# inactividade, e um serviço adormecido não corre o ciclo interno de ingestão.
-# Sem isto, os dados só actualizariam quando alguém visitasse o site.
-#
-# Porque NÃO é um ping de 10 em 10 minutos
-# ----------------------------------------
-# O Render dá 750 horas/mês de instâncias gratuitas PARTILHADAS por conta.
-# Esta conta tem 12 serviços gratuitos. Manter este acordado 24/7 custaria
-# ~730 h/mês e esgotaria a quota de todos os outros projectos.
-#
-# Em vez disso, acordamos o serviço em janelas curtas: 6 vezes por dia,
-# cada uma com alguns minutos de actividade. Custo estimado: ~90 h/mês,
-# deixando folga larga para os restantes serviços.
-#
-# GitHub Actions é gratuito e ilimitado em repositórios públicos.
-
+# Ingestão no stack gratuito perpétuo: o web service (Koyeb) só serve;
+# este workflow corre o ciclo completo do pipeline contra o Neon.
+# Ver docs/DEPLOY-KOYEB-NEON.md — incluindo a matemática de CU-hours do Neon
+# que motiva o intervalo de 30 minutos (10 min excederiam as 100 CU-h/mês).
 on:
   schedule:
-    # 6 janelas por dia (UTC), espaçadas de 4 horas.
-    - cron: '0 2,6,10,14,18,22 * * *'
-  workflow_dispatch:        # permite correr manualmente a partir do separador Actions
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {} # execução manual: Actions → Scheduled Ingestion → Run workflow
 
+# Nunca acumular: se um ciclo demorar mais que o intervalo, não empilhar execuções.
 concurrency:
-  group: ingest
+  group: ingestion
   cancel-in-progress: false
 
 jobs:
-  wake-and-ingest:
+  worker-once:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Mata execuções penduradas antes que queimem minutos (repos privados).
+    timeout-minutes: 15
     steps:
-      - name: Acordar o serviço
-        id: wake
-        run: |
-          URL="${{ vars.RENDER_URL || 'https://news-ai-agreger.onrender.com' }}"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "A acordar $URL (um serviço adormecido pode demorar ~60s)..."
-          for i in $(seq 1 12); do
-            CODE=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 60 "$URL/api/health" || echo 000)
-            if [ "$CODE" = "200" ]; then
-              echo "Acordado à tentativa $i:"
-              cat /tmp/health.json; echo
-              exit 0
-            fi
-            echo "  tentativa $i: HTTP $CODE, a aguardar..."
-            sleep 15
-          done
-          echo "::error::O serviço não respondeu 200 em /api/health após 12 tentativas."
-          exit 1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
 
-      # O ciclo interno do servidor corre ao arrancar, por isso acordá-lo já
-      # dispara a ingestão. Mantemos o serviço vivo alguns minutos para que o
-      # ciclo termine (ingestão -> clustering -> agentes -> scoring -> grafo).
-      - name: Manter acordado enquanto o ciclo corre
-        run: |
-          URL="${{ steps.wake.outputs.url }}"
-          for i in $(seq 1 10); do
-            sleep 30
-            curl -s -o /dev/null --max-time 30 "$URL/api/health" || true
-          done
+      # --include=dev: o tsx do worker:once é devDependency (mesma razão de
+      # scripts/check-prod-build.ts para o Render).
+      - run: npm ci --include=dev
 
-      - name: Relatar estado real
-        run: |
-          URL="${{ steps.wake.outputs.url }}"
-          curl -s --max-time 45 "$URL/api/status" -o /tmp/status.json
-          python3 - <<'PY'
-          import json
-          d = json.load(open('/tmp/status.json'))
-          c = d['counts']
-          on = [s for s in d['sources'] if s.get('status') == 'online']
-          print(f"artigos={c['articles']} eventos={c['events']} publicados={c['published']}")
-          print(f"fila de revisão={c['review_open']} conflitos={c['conflicts']}")
-          print(f"fontes online: {len(on)}/{len(d['sources'])}")
-          falhas = [s for s in d['sources'] if s.get('status') != 'online']
-          for s in falhas:
-              print(f"  FALHA {s['name']}: {s.get('status')} {s.get('last_error') or ''}")
-          # Uma fonte em baixo é informação, não motivo para falhar o workflow.
-          # Falhamos apenas se TUDO estiver em baixo, o que indica avaria real.
-          if not on:
-              raise SystemExit("::error::Nenhuma fonte está online.")
-          PY
-
-      - name: Resumo
-        if: always()
-        run: |
-          {
-            echo "### Ingestão"
-            echo ""
-            if [ -f /tmp/status.json ]; then
-              python3 -c "
-          import json
-          d=json.load(open('/tmp/status.json')); c=d['counts']
-          on=len([s for s in d['sources'] if s.get('status')=='online'])
-          print(f'- Artigos: {c[\"articles\"]}')
-          print(f'- Eventos publicados: {c[\"published\"]}')
-          print(f'- Fontes online: {on}/{len(d[\"sources\"])}')
-          print(f'- Em revisão humana: {c[\"review_open\"]}')
-          "
-            else
-              echo "- O serviço não respondeu."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run one ingestion cycle
+        env:
+          # O worker só precisa da base de dados. ADMIN_TOKEN/VIEW_SALT/PUBLIC_BASE_URL
+          # são do processo web (Koyeb); chaves LLM são opcionais e nunca aqui.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run worker:once
