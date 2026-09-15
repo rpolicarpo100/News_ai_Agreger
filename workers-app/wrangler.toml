@@ -3,7 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Sem segredos aqui: DATABASE_URL entra como secret (wrangler secret put
-# DATABASE_URL, ou dashboard → Settings → Variables → Secrets).
 [observability]
 enabled = true
+
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "d5f01cdcc4084d6ba07b53aadf6a2940"
+localConnectionString = "postgresql://gni_app.vtqxwmvqdaovifeukexc:_XXwN2m_ID6iS9jspGRdnpaz4ca15SHp@aws-0-eu-central-1.pooler.supabase.com:5432/postgres"
