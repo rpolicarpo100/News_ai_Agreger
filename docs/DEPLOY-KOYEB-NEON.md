@@ -1,8 +1,27 @@
-# Deploy gratuito perpétuo: Koyeb + Neon + GitHub Actions
+# Deploy gratuito perpétuo: Koyeb + Postgres gerido + cron externo
 
 Stack 100% gratuita **sem cartão de crédito e sem data de expiração** — ao
 contrário do Render gratuito (serviço adormece aos 15 min, Postgres expira aos
 30 dias — ver `docs/DEPLOY.md`).
+
+## Base de dados: Neon OU Supabase (ambos servem)
+
+A aplicação só precisa de um Postgres com SSL — qualquer um dos dois funciona
+sem mudar uma linha de código (`src/db/index.ts` aceita `DATABASE_URL`).
+
+| | [Neon](https://neon.com) | [Supabase](https://supabase.com) |
+|---|---|---|
+| Armazenamento free | 0,5 GB | 500 MB |
+| Expira? | Não | Não |
+| Pausa por inactividade | Autosuspende aos 5 min (acorda sozinho) | Pausa após 7 dias inactiva |
+| Pausa relevante aqui? | Não — a ingestão de 30/30 min mantém-no activo | Não — pelo mesmo motivo |
+| Ligar daqui (sem browser) | — | Sim, via conector (projecto **gni** já criado) |
+
+> **Projecto Supabase já criado**: `gni` (ref `vtqxwmvqdaovifeukexc`), região
+> `eu-central-1`, role da app `gni_app` já criado e testado (directa e pooler).
+> Usar a connection string **pooler** (porta 5432): hostname
+> `aws-0-eu-central-1.pooler.supabase.com`, user `gni_app.vtqxwmvqdaovifeukexc`,
+> base `postgres`. Ver secção 3 abaixo.
 
 ```
 GitHub Actions (a cada 30 min)          Koyeb (web service)
