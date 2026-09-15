@@ -7,6 +7,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { getDb, migrate } from '../db/index.js';
 import { runIngestion, registerSources } from '../ingestion/ingest.js';
 import { runClustering } from '../pipeline/cluster.js';
@@ -329,6 +330,56 @@ admin.post('/pipeline/run', async (_req, res) => {
   res.json({ ingestion: ing, clustering: cl, intelligence: { processed: cy.length, published: cy.filter((c) => c.published).length }, graph: gr });
 });
 app.use('/api/admin', admin);
+
+// ---------------------------------------------------------------- cron trigger
+// Ingestão sem depender do GitHub Actions (o cron da conta ficou bloqueado por
+// facturação): um pinger externo gratuito (cron-job.org, UptimeRobot, Healthchecks.io) chama este endpoint nos intervalos configurados.
+// Protecções: CRON_TOKEN obrigatório (503 se ausente — seguro por omissão),
+// comparação timing-safe, 404 em token errado, um único ciclo em execução
+// (409 para chamadas concorrentes), e o ciclo respeita a flag ingestion do
+// Admin Center. Responde 202 imediatamente: o ciclo corre em fundo, o pinger
+// nunca espera.
+let cronRunning = false;
+app.all('/api/cron/run', async (req, res) => {
+  const expected = process.env.CRON_TOKEN ?? '';
+  if (!expected) { res.status(503).json({ error: 'cron_disabled' }); return; }
+  const provided = createHash('sha256').update(String(req.header('x-cron-token') ?? '')).digest();
+  const wanted = createHash('sha256').update(expected).digest();
+  if (!timingSafeEqual(provided, wanted)) { res.status(404).json({ error: 'not_found' }); return; }
+  if (cronRunning) { res.status(409).json({ error: 'cycle_already_running' }); return; }
+  cronRunning = true;
+  res.status(202).json({ accepted: true });
+  void (async () => {
+    const t0 = Date.now();
+    try {
+      if ((await getFlag(FLAGS.INGESTION)) === 'off') { console.log('[cron] ingestion desligada por flag; ciclo ignorado'); return; }
+      const ing = await runIngestion();
+      const cl = await runClustering();
+      const cy = await runIntelligenceCycle();
+      const gr = await buildGraph();
+      const al = await runAlerts();
+      let retention: Awaited<ReturnType<typeof runRetention>> | null = null;
+      try {
+        const db = await getDb();
+        const rows = await db.query<{ value: string }>(`SELECT value FROM system_flag WHERE key='retention_last_run_at'`);
+        const last = rows[0]?.value;
+        if (!last || Date.now() - new Date(last).getTime() > 24 * 3600e3) {
+          retention = await runRetention();
+          await db.query(
+            `INSERT INTO system_flag (key, value, updated_by) VALUES ('retention_last_run_at',$1,'cron-endpoint')
+             ON CONFLICT (key) DO UPDATE SET value=$1, updated_by='cron-endpoint', updated_at=now()`,
+            [new Date().toISOString()],
+          );
+        }
+      } catch (e) { console.error('[cron] retention failed:', e); }
+      console.log(`[cron] ciclo completo em ${Date.now() - t0}ms: ingested=${ing.totalInserted} processed=${cy.length} published=${cy.filter((c) => c.published).length} edges=${gr.edges} notifs=${al.notificationsCreated}`);
+    } catch (err) {
+      console.error('[cron] cycle failed:', err);
+    } finally {
+      cronRunning = false;
+    }
+  })();
+});
 
 // ---------------------------------------------------------------- event detail
 export async function eventDetail(id: string) {

@@ -120,6 +120,27 @@ Se um dia mudar de plano, basta afinar o `cron:` no `ingest.yml` e
   consulta (latência extra de 1-2 s na primeira request).
 - **Custom domain** nunca é grátis (registo ~10 €/ano); o URL `*.koyeb.app` é.
 
+## Alternativa sem GitHub Actions: `POST /api/cron/run`
+
+Se os Actions da conta estiverem bloqueados (ex.: facturação/spending limit) ou
+preferir não depender deles, o web service expõe um endpoint de cron próprio:
+
+```
+POST /api/cron/run
+Header: x-cron-token: <valor de CRON_TOKEN>
+```
+
+- Responde `202` imediatamente e corre o ciclo completo em fundo (ingestão,
+  clustering, agentes, grafo, alertas, retenção diária).
+- Sem `CRON_TOKEN` definido no Koyeb, devolve `503` (seguro por omissão).
+- Token errado devolve `404`; chamadas concorrentes devolvem `409`.
+- Respeita a flag `ingestion` do Admin Center.
+
+Configurar: adicione `CRON_TOKEN` (openssl rand -hex 32) às variáveis do Koyeb
+e crie um job gratuito em <https://cron-job.org> (ou UptimeRobot) a fazer
+`POST` a `https://SEU-APP.koyeb.app/api/cron/run` com o header, a cada 30 min.
+Nada disto precisa de cartão nem de permissões de Actions.
+
 ## Diagnóstico rápido
 
 | Sintoma | Causa provável |
