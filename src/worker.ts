@@ -1,6 +1,6 @@
 /**
  * Standalone worker process (Section 63) — run separately on Render if desired,
- * or once per cycle from GitHub Actions (docs/DEPLOY-KOYEB-NEON.md).
+ * or once per cycle from GitHub Actions (docs/DEPLOY-FREE.md).
  *
  * Retention runs here too: on the free stack (Koyeb + Neon + GitHub Actions)
  * ingestion happens outside the web process, so this is where the daily policy

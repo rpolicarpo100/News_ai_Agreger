@@ -1,9 +1,9 @@
 # Global News Intelligence — web service image (Koyeb / Cloud Run / any container host).
 #
-# The ingestion worker does NOT run here: on the free-forever stack the web
-# service only serves, and ingestion happens via GitHub Actions running
-# `npm run worker:once` (see docs/DEPLOY-KOYEB-NEON.md). Set
-# RUN_WORKER_IN_WEB=false accordingly.
+# The ingestion worker does NOT run in the container by default: on the
+# free-forever stack ingestion happens via POST /api/cron/run (external pinger,
+# see docs/DEPLOY-FREE.md) and RUN_WORKER_IN_WEB=true lets every wake-up also
+# run one cycle as a backup.
 #
 # Build:  docker build -t gni-web .
 # Run:    docker run -p 3000:3000 --env-file .env gni-web

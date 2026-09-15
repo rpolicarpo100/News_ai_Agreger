@@ -1,13 +1,17 @@
 # Render blueprint — https://render.com/docs/blueprint-spec
-# Deploy: push to GitHub, then Render → New → Blueprint → select this repo.
-databases:
-  - name: gni-db
-    databaseName: gni
-    plan: free
-    postgresMajorVersion: "16"
+#
+# Stack gratuito perpétuo (docs/DEPLOY-KOYEB-NEON.md, renomeado para
+# DEPLOY-FREE.md): o Postgres NÃO vem do Render — o plano free deles EXPIRA
+# aos 30 dias. A base é o Supabase (ou Neon), definida manualmente em
+# DATABASE_URL. A ingestão corre via /api/cron/run (ping externo a cada
+# 30 min) e, como reforço, no próprio arranque do serviço (RUN_WORKER_IN_WEB).
+#
+# Deploy: Render → New → Blueprint → escolher o repositório, ou Web Service
+# avulso. Alternativa Docker: o Dockerfile funciona igualmente (escolher
+# runtime Docker na UI; o blueprint mantém runtime node porque o gate
+# check-prod-build.ts exige buildCommand com npm ci --include=dev).
 
 services:
-  # ---------------------------------------------------------------- web
   - type: web
     name: gni-web
     runtime: node
@@ -19,37 +23,17 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: gni-db
-          property: connectionString
-      - key: VIEW_SALT          # rotates view-session hashing; never logged
-        generateValue: true
-      - key: ADMIN_TOKEN        # bearer token for /api/admin/*
-        generateValue: true
-      - key: PUBLIC_BASE_URL    # set to your Render URL for correct canonicals/sitemap
+      - key: DATABASE_URL        # Supabase/Neon (pooler) — NUNCA Render Postgres
         sync: false
-      - key: RUN_WORKER_IN_WEB  # 'false' when running the separate worker service
+      - key: VIEW_SALT           # roda o hash de sessões de visualização
+        generateValue: true
+      - key: ADMIN_TOKEN         # bearer token para /api/admin/*
+        generateValue: true
+      - key: CRON_TOKEN          # header x-cron-token do POST /api/cron/run
+        generateValue: true
+      - key: PUBLIC_BASE_URL     # URL do Render, para canonicals/sitemap
+        sync: false
+      - key: RUN_WORKER_IN_WEB   # cada acordar/disparo corre um ciclo
         value: "true"
       - key: CYCLE_MINUTES
-        value: "10"
-
-  # ---------------------------------------------------------------- worker
-  # Free Render plans allow one service; enable this on a paid plan and set
-  # RUN_WORKER_IN_WEB=false on the web service to separate ingestion from serving.
-  - type: worker
-    name: gni-worker
-    runtime: node
-    plan: starter
-    buildCommand: npm ci --include=dev && npm run build
-    startCommand: npm run worker
-    autoDeploy: false
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: gni-db
-          property: connectionString
-      - key: CYCLE_MINUTES
-        value: "10"
+        value: "30"
